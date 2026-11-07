@@ -54,6 +54,8 @@ def _build(root: Page | Locator, cand: tuple[str, ...]) -> Locator:
     kind = cand[0]
     if kind == "role":
         role, name = cand[1], cand[2]
+        if isinstance(name, str) and name.startswith("re:"):
+            return root.get_by_role(role, name=re.compile(name[3:], re.I))  # type: ignore[arg-type]
         exact = bool(cand[3]) if len(cand) > 3 else False
         return root.get_by_role(role, name=name, exact=exact)  # type: ignore[arg-type]
     if kind == "testid":
@@ -74,13 +76,44 @@ def _build(root: Page | Locator, cand: tuple[str, ...]) -> Locator:
     raise ValueError(f"unknown candidate kind: {kind!r}")
 
 
-def find_dialog(root: Page, title_sel: Sel, *, timeout_ms: int = 15_000) -> Locator:
-    """Return the visible [role=dialog] whose subtree matches ``title_sel``.
+_MARK_DIALOG_JS = r"""
+(el) => {
+  // Re-mark each time so scoping cannot go stale after a modal closes.
+  document.querySelectorAll('[data-wqu-dialog]').forEach(
+    (n) => n.removeAttribute('data-wqu-dialog'));
+  let node = el.parentElement;
+  let fallback = null;
+  while (node && node !== document.body) {
+    const st = getComputedStyle(node);
+    if (st.position === 'fixed' || st.position === 'absolute') {
+      if (node.querySelector('button')) {
+        node.setAttribute('data-wqu-dialog', '1');
+        return true;
+      }
+      if (!fallback) fallback = node;
+    }
+    node = node.parentElement;
+  }
+  if (fallback) {
+    fallback.setAttribute('data-wqu-dialog', '1');
+    return true;
+  }
+  return false;
+}
+"""
 
-    Modals render at the end of <body> and multiple dialogs can be stacked,
-    so matching by title text inside each candidate dialog is the reliable
-    way to pick the right one.
+
+def find_dialog(root: Page, title_sel: Sel, *, timeout_ms: int = 15_000) -> Locator:
+    """Return a Locator scoped to the modal identified by ``title_sel``.
+
+    Wayground modals do NOT reliably carry role=dialog, so two strategies
+    are tried in order:
+      1. a [role=dialog] whose subtree contains the title text;
+      2. find the title text element, walk up to the nearest fixed or
+         absolute overlay that contains a button, and tag it with
+         ``data-wqu-dialog`` (a marker we add ourselves — not a CSS class).
     """
+    js = _MARK_DIALOG_JS
     deadline = time.monotonic() + timeout_ms / 1000.0
     while True:
         dialogs = root.get_by_role("dialog")
@@ -91,6 +124,17 @@ def find_dialog(root: Page, title_sel: Sel, *, timeout_ms: int = 15_000) -> Loca
                     return dialog
             except Exception:
                 continue
+        # Fallback: tag the modal container ourselves.
+        try:
+            title = resolve(root, title_sel, timeout_ms=400)
+            if title.evaluate(js):
+                marked = root.locator('[data-wqu-dialog="1"]').first
+                if marked.count() and marked.is_visible():
+                    return marked
+        except SelectorNotFoundError:
+            pass
+        except Exception as exc:
+            log.debug("dialog marking failed: %s", exc)
         if time.monotonic() >= deadline:
             raise SelectorNotFoundError(f"dialog:{title_sel.key}", title_sel.evidence)
         root.wait_for_timeout(250)
@@ -255,6 +299,21 @@ def read_checked(scope: Page | Locator, loc: Locator) -> bool | None:
         return None
 
 
+def click_control(loc: Locator, *, timeout_ms: int = 2_500) -> None:
+    """Click a custom control (checkbox/switch) reliably.
+
+    Wayground wraps its inputs in styled divs whose knobs intercept pointer
+    events, so Playwright's normal click can time out (LIVE 2026-11-08). Fall
+    back to a JS element click, which React handles exactly like a user click.
+    """
+    try:
+        loc.click(timeout=timeout_ms)
+        return
+    except Exception as exc:
+        log.debug("normal click failed (%s); falling back to JS click", exc)
+    loc.evaluate("el => el.click()")
+
+
 def ensure_unchecked(page: Page, loc: Locator, *, label: str, on_progress=None) -> bool:
     """Make sure a checkbox/switch is OFF. Returns True when verified OFF.
 
@@ -267,7 +326,7 @@ def ensure_unchecked(page: Page, loc: Locator, *, label: str, on_progress=None) 
         return False
     if state:
         try:
-            loc.click()
+            click_control(loc)
         except Exception as exc:
             log.warning("clicking %s failed: %s", label, exc)
             return False
@@ -483,20 +542,26 @@ NAME_INPUT = Sel(
 SUBJECT_SELECT = Sel(
     "subject_select",
     (
-        ("xpath", "//*[normalize-space(text())='Subject']/following::*[@role='combobox' or @aria-haspopup][1]"),
-        ("xpath", "//*[normalize-space(text())='Subject']/following::button[1]"),
+        # LIVE 2026-11-08: real testid + aria-haspopup=listbox trigger; text is
+        # "Select relevant subject" until a value is chosen.
+        ("testid", "quiz-subject-select-box"),
+        ("role", "button", "Select relevant subject"),
+        ("role", "button", "re:select relevant subject"),
+        ("xpath", "//p[normalize-space()='Subject']/following::*[@aria-haspopup][1]"),
     ),
-    status="visual",
-    evidence="screenshots/step_07/08.png — Subject dropdown trigger under label (left of Grade)",
+    status="verified-live",
+    evidence="data-testid=quiz-subject-select-box; options are UL[role=listbox] > LI[role=option]",
 )
 GRADE_SELECT = Sel(
     "grade_select",
     (
-        ("xpath", "//*[normalize-space(text())='Grade']/following::*[@role='combobox' or @aria-haspopup][1]"),
-        ("xpath", "//*[normalize-space(text())='Grade']/following::button[1]"),
+        ("testid", "publish-modal-grade-input-select-box"),
+        ("role", "button", "Select relevant grade"),
+        ("role", "button", "re:select relevant grade"),
+        ("xpath", "//p[normalize-space()='Grade']/following::*[@aria-haspopup][1]"),
     ),
-    status="visual",
-    evidence="screenshots/step_07/09.png — Grade dropdown trigger (right of Subject)",
+    status="verified-live",
+    evidence="data-testid=publish-modal-grade-input-select-box",
 )
 SELECT_PLACEHOLDER_TRIGGER = Sel(
     "select_placeholder_trigger",
@@ -520,11 +585,13 @@ PUBLISH_MODAL_PUBLISH = Sel(
 PUBLISH_BUTTON_TOP = Sel(
     "publish_button_top",
     (
-        ("role", "button", "Publish"),
+        # LIVE 2026-11-08: aria-label overrides the visible text ("Publish quiz").
+        ("role", "button", "Publish quiz"),
+        ("role", "button", "re:^publish( quiz)?$"),
         ("text", "Publish", True),
     ),
-    status="visual",
-    evidence="screenshots/step_02/06.png — pink Publish top-right of editor (must be outside dialogs)",
+    status="verified-live",
+    evidence="aria-label='Publish quiz' observed on the editor; visible text is 'Publish'",
 )
 SAVED_DIALOG_MARKER = Sel(
     "saved_dialog_marker",
@@ -539,12 +606,15 @@ SAVED_DIALOG_MARKER = Sel(
 CLOSE_BUTTON = Sel(
     "close_button",
     (
+        # LIVE 2026-11-08: the modal X is a button with aria-label="xmark".
+        ("role", "button", "xmark"),
+        ("label", "xmark"),
         ("role", "button", "Close"),
         ("label", "Close"),
         ("css", '[aria-label="Close"]'),
     ),
-    status="visual",
-    evidence="screenshots/step_07/13.png — X in modal top-right",
+    status="verified-live",
+    evidence='aria-label="xmark" observed on the publish modal X; screenshots step_07/13',
 )
 PUBLISH_ERROR_HINTS = Sel(
     "publish_error_hints",
@@ -572,18 +642,18 @@ ASSIGN_BUTTON = Sel(
 CHANGE_TIME_BUTTON = Sel(
     "change_time_button",
     (
+        ("testid", "toggle-calendar-button"),
         ("role", "button", "Change"),
-        ("role", "button", "Change", False),
     ),
-    status="visual",
-    evidence='screenshots/step_15.png — "Change" next to "Start – End time"',
+    status="verified-live",
+    evidence='data-testid=toggle-calendar-button; screenshots/step_15.png ("Change")',
 )
 NO_DEADLINE_TOGGLE = Sel(
     "no_deadline_toggle",
     (
+        # LIVE 2026-11-08: the End-time switch in the timeline modal.
+        ("testid", "date-time-selector-input"),
         ("role", "switch", "No deadline", False),
-        ("role", "checkbox", "No deadline", False),
-        ("label", "No deadline"),
         (
             "xpath",
             "//*[normalize-space(text())='No deadline']"
@@ -591,18 +661,18 @@ NO_DEADLINE_TOGGLE = Sel(
             "//*[@role='switch' or @role='checkbox' or @type='checkbox'][1]",
         ),
     ),
-    status="visual",
-    evidence="screenshots/step_22.png — switch on the 'End time' row, label 'No deadline'; "
-    "state must be read before clicking",
+    status="verified-live",
+    evidence="input[type=checkbox][role=switch][data-testid=date-time-selector-input], aria-checked readable",
 )
 SAVE_AND_CLOSE_BUTTON = Sel(
     "save_and_close_button",
     (
+        ("testid", "timeline-selector-continue-button"),
         ("role", "button", "Save and close"),
         ("text", "Save and close", True),
     ),
-    status="visual",
-    evidence="screenshots/step_23.png — pink footer button of the Start – End time modal",
+    status="verified-live",
+    evidence="data-testid=timeline-selector-continue-button in the timeline-selector-modal",
 )
 DEADLINE_APPLIED_TEXT = Sel(
     "deadline_applied_text",
@@ -631,11 +701,12 @@ CLASS_ASSIGNED_MARKER = Sel(
 SELECT_A_CLASS_BUTTON = Sel(
     "select_a_class_button",
     (
+        ("testid", "select-class-button"),
         ("role", "button", "Select a class"),
         ("text", "Select a class", True),
     ),
-    status="visual",
-    evidence='screenshots/step_15.png — "Not assigned to a class" row, right side',
+    status="verified-live",
+    evidence='data-testid=select-class-button; screenshots/step_15.png ("Not assigned to a class" row)',
 )
 MODIFY_CLASS_BUTTON = Sel(  # pre-selected class from an earlier run
     "modify_class_button",
@@ -668,17 +739,19 @@ CLASS_SEARCH_INPUT = Sel(
 ACCOMMODATIONS_CHECKBOX = Sel(
     "accommodations_checkbox",
     (
-        ("role", "checkbox", "Set up Accommodations", False),
+        # LIVE 2026-11-08: real input, CHECKED as soon as a class is selected.
+        ("testid", "assignment-setup-accommodations-toggle"),
+        ("role", "checkbox", "re:setup accommodations|set up accommodations", False),
         (
             "xpath",
             "//*[contains(normalize-space(text()), 'Set up Accommodations')]"
             "/ancestor-or-self::*[.//input[@type='checkbox']][1]"
             "//input[@type='checkbox']",
         ),
-        ("label", "Set up Accommodations"),
     ),
-    status="visual",
-    evidence="screenshots/step_19.png — footer checkbox becomes CHECKED after selecting a class; step_20 unchecks",
+    status="verified-live",
+    evidence="input[type=checkbox][data-testid=assignment-setup-accommodations-toggle]; "
+    "checked=True after ticking a class; the input is covered by a styled wrapper → use click_control",
 )
 NEXT_BUTTON = Sel(
     "next_button",
@@ -717,6 +790,15 @@ ASSIGNMENT_DETAILS_MARKER = Sel(
 )
 
 # --- gameplay / join link ----------------------------------------------------
+GOT_IT_BUTTON = Sel(
+    "got_it_button",
+    (
+        ("role", "button", "Got it"),
+        ("text", "Got it", True),
+    ),
+    status="verified-live",
+    evidence="coachmark/tip bubble on the quiz page; intercepts clicks until dismissed",
+)
 COPY_JOIN_LINK_BUTTON = Sel(
     "copy_join_link_button",
     (
@@ -751,12 +833,16 @@ ACCOMMODATIONS_PAGE_MARKER = Sel(
 ACCOMMODATIONS_BACK_BUTTON = Sel(
     "accommodations_back_button",
     (
+        # The homework page's own back button is aria='chevron-left'; the round
+        # back arrow on the accommodations page almost certainly shares it.
+        ("role", "button", "chevron-left"),
         ("role", "button", "Back"),
         ("role", "button", "Go back", False),
         ("label", "Back"),
         ("xpath", "//*[normalize-space()='Set up Accommodations']/preceding::button[1]"),
         ("xpath", "//*[normalize-space()='Set up Accommodations']/ancestor::*[1]//button[1]"),
     ),
-    status="visual",
-    evidence="screenshots/step_16.png — round back-arrow button top-left next to 'Set up Accommodations'",
+    status="visual-partial",
+    evidence="screenshots/step_16.png — round back arrow; this app's icon aria for back is 'chevron-left' "
+    "(as on the homework page back-button)",
 )

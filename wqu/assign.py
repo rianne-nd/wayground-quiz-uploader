@@ -19,7 +19,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from playwright.sync_api import Page
+from playwright.sync_api import Locator, Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from wqu import selectors as S
@@ -229,15 +229,26 @@ def _uncheck_accommodations(page: Page, dialog: S.Locator, *, fatal: bool, on_pr
     _log(on_progress, "WARNING: could not verify 'Set up Accommodations' in the name modal.")
 
 
-def _name_assignment(page: Page, title: str, on_progress: ProgFn) -> None:
-    """Fill the 'Name this assignment (Optional)' modal and click Next."""
-    dialog = S.find_dialog(page, S.NAME_ASSIGNMENT_DIALOG_TITLE)
+def _name_assignment(page: Page, title: str, on_progress: ProgFn, dialog: Locator | None = None) -> None:
+    """Fill the 'Name this assignment (Optional)' modal and click Next.
+
+    NOTE (LIVE 2026-11-08): Wayground stacks modals — the previous dialog stays
+    mounted underneath, so we never wait for it to *hide*; callers wait for the
+    next observable state instead.
+    """
+    if dialog is None:
+        dialog = S.find_dialog(page, S.NAME_ASSIGNMENT_DIALOG_TITLE)
     _log(on_progress, f"Naming the assignment {title!r}...")
     field = S.resolve(dialog, S.ASSIGNMENT_TITLE_INPUT, timeout_ms=5_000)
     field.fill(title[:MAX_ASSIGNMENT_TITLE])
     _uncheck_accommodations(page, dialog, fatal=False, on_progress=on_progress)
     S.click(dialog, S.NEXT_BUTTON, timeout_ms=8_000)
-    dialog.wait_for(state="hidden", timeout=15_000)
+    try:
+        page.get_by_text("Name this assignment", exact=False).first.wait_for(
+            state="hidden", timeout=10_000
+        )
+    except PlaywrightTimeoutError:
+        log.info("name modal still mounted (stacked); continuing to the details check")
 
 
 def _set_no_deadline(page: Page, on_progress: ProgFn) -> None:
@@ -254,13 +265,11 @@ def _set_no_deadline(page: Page, on_progress: ProgFn) -> None:
             "(verify the control markup with 'wqu discover' — see docs/troubleshooting.md)"
         )
     if not state:
-        toggle.click(timeout=5_000)
+        # The switch input is covered by a styled knob → click_control handles it.
+        S.click_control(toggle, timeout_ms=3_000)
         after = S.read_checked(page, toggle)
         if after is False:
-            try:  # some switch markup toggles only via its label
-                page.get_by_text("No deadline", exact=True).first.click(timeout=3_000)
-            except Exception:
-                pass
+            S.click_control(toggle, timeout_ms=3_000)  # one retry, JS click path
             after = S.read_checked(page, toggle)
         if after is False:
             raise AssignError("clicked 'No deadline' but the control still reads OFF")
@@ -268,7 +277,7 @@ def _set_no_deadline(page: Page, on_progress: ProgFn) -> None:
     else:
         _log(on_progress, "'No deadline' was already ON.")
 
-    save_button.click(timeout=5_000)
+    S.click_control(save_button, timeout_ms=5_000)
     try:
         save_button.wait_for(state="hidden", timeout=15_000)
     except PlaywrightTimeoutError:
@@ -296,6 +305,56 @@ def _click_final_assign(page: Page, on_progress: ProgFn) -> str:
     return match.group("activity_id") if match else ""
 
 
+def _wait_homework_or_glitch(page: Page, *, timeout_ms: int) -> str:
+    """Race: homework URL reached | accommodations page shown | timeout."""
+    waited = 0
+    step = 500
+    while waited < timeout_ms:
+        if _HOMEWORK_URL_RE.search(page.url):
+            return "homework"
+        if S.visible(page, S.ACCOMMODATIONS_PAGE_MARKER, timeout_ms=step):
+            return "glitch"
+        waited += step
+    return "timeout"
+
+
+def _enter_homework_page(page: Page, on_progress: ProgFn) -> str:
+    """Click Assign on the quiz page; recover from the accommodations glitch.
+
+    LIVE 2026-11-08: this glitch can strike right after clicking Assign (not
+    only at 'Select a class'); after the back arrow we either land on the
+    homework page or back on the quiz page (then Assign again).
+    """
+    for _attempt in range(3):
+        _dismiss_coachmarks(page, on_progress)
+        S.click_outside_dialogs(page, r"^Assign$", timeout_ms=15_000)
+        state = _wait_homework_or_glitch(page, timeout_ms=30_000)
+        if state == "homework":
+            match = _HOMEWORK_URL_RE.search(page.url)
+            return match.group("homework_id") if match else ""
+        if state == "glitch":
+            recover_accommodations_page(page, on_progress)
+            page.wait_for_timeout(1_500)
+            if _HOMEWORK_URL_RE.search(page.url):
+                match = _HOMEWORK_URL_RE.search(page.url)
+                return match.group("homework_id") if match else ""
+            _log(on_progress, "Back from the accommodations page; trying Assign again...")
+            continue
+    raise AssignError(f"could not reach the Assignment Details page (now at {page.url})")
+
+
+def _dismiss_coachmarks(page: Page, on_progress: ProgFn = None) -> None:
+    """'Got it' tip bubbles can intercept clicks (LIVE 2026-11-08)."""
+    for _ in range(3):
+        if not S.visible(page, S.GOT_IT_BUTTON, timeout_ms=800):
+            return
+        _log(on_progress, "Dismissing a 'Got it' tip...")
+        try:
+            S.click(page, S.GOT_IT_BUTTON, timeout_ms=2_000)
+        except SelectorNotFoundError:
+            return
+
+
 def assign_one(
     page: Page,
     *,
@@ -307,13 +366,7 @@ def assign_one(
     """Run the whole homework-assignment flow. Entry point: the quiz page."""
     _log(on_progress, "Starting the assignment flow (Assign)...")
     recover_accommodations_page(page, on_progress)
-    S.click_outside_dialogs(page, r"^Assign$", timeout_ms=15_000)
-    try:
-        page.wait_for_url(_HOMEWORK_URL_RE, timeout=30_000)
-    except PlaywrightTimeoutError as exc:
-        raise AssignError(f"clicking Assign did not reach the homework page (now at {page.url})") from exc
-    match = _HOMEWORK_URL_RE.search(page.url)
-    homework_id = match.group("homework_id") if match else ""
+    homework_id = _enter_homework_page(page, on_progress)
     S.resolve(page, S.ASSIGNMENT_DETAILS_MARKER, timeout_ms=30_000)
     recover_accommodations_page(page, on_progress)
 
@@ -322,9 +375,10 @@ def assign_one(
     _select_class_row(page, dialog, class_name, on_progress)
     _uncheck_accommodations(page, dialog, fatal=True, on_progress=on_progress)
     S.click(dialog, S.NEXT_BUTTON, timeout_ms=8_000)
-    dialog.wait_for(state="hidden", timeout=15_000)
+    # Modals stack: the class modal stays mounted; wait for the NEXT modal.
+    name_dialog = S.find_dialog(page, S.NAME_ASSIGNMENT_DIALOG_TITLE, timeout_ms=15_000)
 
-    _name_assignment(page, assignment_title, on_progress)
+    _name_assignment(page, assignment_title, on_progress, dialog=name_dialog)
     recover_accommodations_page(page, on_progress)
     try:
         S.resolve(page, S.CLASS_ASSIGNED_MARKER, timeout_ms=15_000)

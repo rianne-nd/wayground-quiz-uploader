@@ -127,7 +127,7 @@ def dismiss_premium_popup(page: Page, on_progress: ProgFn = None) -> bool:
         return False
     _log(on_progress, "Dismissing premium popup...")
     try:
-        dialog = page.get_by_role("dialog").first
+        dialog = S.find_dialog(page, S.PREMIUM_POPUP_MARKER, timeout_ms=4_000)
         S.click(dialog, S.CLOSE_BUTTON, timeout_ms=3_000)
     except Exception:
         try:
@@ -235,7 +235,8 @@ def upload_xlsx(
     on_progress: ProgFn = None,
 ) -> None:
     """Editor step: Import existing files -> Spreadsheet -> attach -> banner."""
-    S.resolve(page, S.IMPORT_EXISTING_SECTION).scroll_into_view_if_needed()
+    section = _scroll_to_import_section(page, on_progress)
+    section.scroll_into_view_if_needed()
     _log(on_progress, "Opening the spreadsheet import modal...")
     S.click(page, S.SPREADSHEET_BUTTON)
     dialog = S.find_dialog(page, S.IMPORT_DIALOG_TITLE)
@@ -309,7 +310,9 @@ def create_quiz(page: Page, *, on_progress: ProgFn = None) -> str:
     match = _EDIT_URL_RE.search(page.url)
     if not match:
         raise PublishError(f"could not read the quiz id from {page.url}")
-    S.resolve(page, S.IMPORT_EXISTING_SECTION, timeout_ms=30_000)
+    # LIVE 2026-11-08: the "Import existing files" section is lazily rendered;
+    # the top-bar publish button is the reliable editor-ready marker.
+    S.resolve(page, S.PUBLISH_BUTTON_TOP, timeout_ms=30_000)
     _log(on_progress, f"Editor ready (quiz id {match.group('quiz_id')})")
     return match.group("quiz_id")
 
@@ -319,7 +322,45 @@ def resume_quiz(page: Page, quiz_id: str, *, on_progress: ProgFn = None) -> None
     _log(on_progress, f"Resuming quiz {quiz_id}...")
     page.goto(QUIZ_EDIT_URL.format(quiz_id=quiz_id), wait_until="domcontentloaded", timeout=60_000)
     guard_session(page)
-    S.resolve(page, S.IMPORT_EXISTING_SECTION, timeout_ms=30_000)
+    S.resolve(page, S.PUBLISH_BUTTON_TOP, timeout_ms=30_000)
+
+
+def _question_count(page: Page) -> int | None:
+    """Number of questions currently in the editor, when the count chip exists."""
+    try:
+        loc = S.resolve(page, S.QUESTIONS_COUNT_MARKER, timeout_ms=5_000)
+        match = re.search(r"(\d+)\s+Questions", loc.inner_text())
+        return int(match.group(1)) if match else None
+    except SelectorNotFoundError:
+        return None
+
+
+def _scroll_to_import_section(page: Page, on_progress: ProgFn) -> Locator:
+    """Scroll the editor until the (lazy-rendered) import section appears."""
+    js_bottom = ("() => { const el = document.scrollingElement || document.documentElement; "
+                 "el.scrollTop = el.scrollHeight; return el.scrollTop; }")
+    for _attempt in range(8):
+        if S.visible(page, S.IMPORT_EXISTING_SECTION, timeout_ms=700):
+            return S.resolve(page, S.IMPORT_EXISTING_SECTION)
+        try:
+            page.mouse.move(720, 450)
+            page.mouse.wheel(0, 1_200)
+            page.evaluate(js_bottom)
+        except Exception:
+            pass
+        page.wait_for_timeout(300)
+    _log(on_progress, "Scrolling further to reach 'Import existing files'...")
+    return S.resolve(page, S.IMPORT_EXISTING_SECTION, timeout_ms=15_000)
+
+
+def _verify_dropdown_value(trigger: Locator, value: str, on_progress: ProgFn) -> None:
+    """The trigger's text becomes the chosen value; warn (don't fail) if not."""
+    try:
+        text = (trigger.inner_text() or "").strip()
+    except Exception:
+        return
+    if value.lower() not in text.lower():
+        _log(on_progress, f"WARNING: dropdown shows {text!r} instead of {value!r}")
 
 
 def _dropdown_trigger(dialog: Locator, sel: S.Sel, fallback_index: int) -> Locator:
@@ -348,7 +389,29 @@ def publish_quiz(
     Returns the quiz page URL (no /edit), per screenshots/step_12-14.png.
     """
     _log(on_progress, "Opening the publish modal...")
-    S.click_outside_dialogs(page, r"^Publish$", timeout_ms=15_000)
+    # LIVE 2026-11-08: the top-right button's accessible name is "Publish quiz"
+    # (aria-label override); the old "^Publish$" pattern matched nothing.
+    S.click_outside_dialogs(page, r"publish( quiz)?$", timeout_ms=15_000)
+
+    # LIVE 2026-11-08 (second finding): clicking Publish on an already-published
+    # quiz with no changes skips the modal and navigates straight to the quiz
+    # page. Race the modal against that navigation.
+    state: str | None = None
+    waited = 0
+    while waited < 20_000:
+        if S.visible(page, S.PUBLISH_DIALOG_TITLE, timeout_ms=400):
+            state = "dialog"
+            break
+        if _EDIT_URL_RE.search(page.url) is None:
+            state = "published"
+            break
+        page.wait_for_timeout(400)
+        waited += 400
+    if state == "published":
+        _log(on_progress, "Quiz was already published; the app skipped the modal (no changes).")
+        return f"{WAYGROUND}/activity/admin/quiz/{quiz_id}"
+    if state is None:
+        raise PublishError("timed out waiting for the publish modal to appear")
     dialog = S.find_dialog(page, S.PUBLISH_DIALOG_TITLE)
 
     name = title.strip() or "Untitled Quiz"
@@ -364,6 +427,7 @@ def publish_quiz(
         known_options=("Mathematics", "English", "Portuguese"),
     ):
         raise PublishError(f"could not choose Subject {options.subject!r} in the publish modal")
+    _verify_dropdown_value(subject_trigger, options.subject, on_progress)
 
     _log(on_progress, f"Choosing Grade: {options.grade}")
     grade_trigger = _dropdown_trigger(dialog, S.GRADE_SELECT, 1)
@@ -372,6 +436,7 @@ def publish_quiz(
         known_options=("Kindergarten", "Elementary (1st - 5th)", "1st Grade", "2nd Grade"),
     ):
         raise PublishError(f"could not choose Grade {options.grade!r} in the publish modal")
+    _verify_dropdown_value(grade_trigger, options.grade, on_progress)
 
     _log(on_progress, "Publishing the quiz...")
     S.click(dialog, S.PUBLISH_MODAL_PUBLISH, timeout_ms=10_000)
@@ -522,7 +587,18 @@ def _process_one(
     record_created(options.state_path, title=data.title, quiz_id=quiz_id, quiz_url=quiz_url,
                    file=str(file), status="created")
 
-    upload_xlsx(page, data, options=options, on_progress=on_progress)
+    # LIVE 2026-11-08: the editor hides "Import existing files" once a quiz has
+    # questions, and re-importing would DUPLICATE them — so a resumed draft
+    # that already contains questions skips the import step.
+    skip_import = False
+    if resume_id is not None:
+        count = _question_count(page)
+        if count:
+            skip_import = True
+            _log(on_progress, f"Resume: the draft already contains {count} question(s); "
+                              "skipping the import step to avoid duplicates.")
+    if not skip_import:
+        upload_xlsx(page, data, options=options, on_progress=on_progress)
     quiz_url = publish_quiz(page, title=data.title, options=options, quiz_id=quiz_id,
                             on_progress=on_progress)
     record_created(options.state_path, title=data.title, quiz_id=quiz_id, quiz_url=quiz_url,
