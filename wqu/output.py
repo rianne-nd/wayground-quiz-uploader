@@ -13,7 +13,7 @@ import logging
 import re
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ class FileResult:
     join_link: str | None = None
     assigned: bool = False
     error: str | None = None
+    error_kind: str | None = None  # e.g. "session-expired", "class-not-found" (not in JSON schema)
     skipped: bool = False
     screenshot: str | None = None
     trace: str | None = None
@@ -102,6 +103,26 @@ def validate_join_link(url: str | None) -> str | None:
     if url and JOIN_LINK_RE.match(url.strip()):
         return url.strip()
     return None
+
+
+_SPLIT_RE = re.compile(r"^(?P<base>.+?)_pt(?P<n>\d+)\.xlsx$", re.IGNORECASE)
+
+
+def natural_sort_key(item: str) -> tuple:
+    """Natural ordering for workbooks: _pt1, _pt2, ..., _pt10 (not alphabetic).
+
+    Whole quizzes sort before their split parts; digit runs compare as ints.
+    """
+    name = str(item).replace("\\", "/").split("/")[-1].lower()
+    split = _SPLIT_RE.match(name)
+    base = split.group("base") if split else name
+    chunks = re.split(r"(\d+)", base)
+    key: list = []
+    for i, chunk in enumerate(chunks):
+        key.append(int(chunk) if i % 2 == 1 else chunk)
+    if split:
+        return (tuple(key), 1, int(split.group("n")))
+    return (tuple(key), 0, 0)
 
 
 def copy_to_clipboard(text: str) -> bool:

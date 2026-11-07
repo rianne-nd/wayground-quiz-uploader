@@ -65,11 +65,35 @@ def _build(root: Page | Locator, cand: tuple[str, ...]) -> Locator:
         return root.get_by_text(cand[1], exact=exact)
     if kind == "label":
         return root.get_by_label(cand[1])
+    if kind == "regex":
+        return root.get_by_text(re.compile(cand[1]))
     if kind == "css":
         return root.locator(cand[1])
     if kind == "xpath":
         return root.locator(f"xpath={cand[1]}")
     raise ValueError(f"unknown candidate kind: {kind!r}")
+
+
+def find_dialog(root: Page, title_sel: Sel, *, timeout_ms: int = 15_000) -> Locator:
+    """Return the visible [role=dialog] whose subtree matches ``title_sel``.
+
+    Modals render at the end of <body> and multiple dialogs can be stacked,
+    so matching by title text inside each candidate dialog is the reliable
+    way to pick the right one.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        dialogs = root.get_by_role("dialog")
+        for i in range(dialogs.count()):
+            dialog = dialogs.nth(i)
+            try:
+                if dialog.is_visible() and visible(dialog, title_sel, timeout_ms=400):
+                    return dialog
+            except Exception:
+                continue
+        if time.monotonic() >= deadline:
+            raise SelectorNotFoundError(f"dialog:{title_sel.key}", title_sel.evidence)
+        root.wait_for_timeout(250)
 
 
 def resolve(
@@ -363,6 +387,14 @@ SPREADSHEET_BUTTON = Sel(
     status="visual",
     evidence='screenshots/step_02.png — "Spreadsheet" button under "Import existing files"',
 )
+QUESTIONS_COUNT_MARKER = Sel(
+    "questions_count_marker",
+    (
+        ("regex", r"\d+\s+Questions"),
+    ),
+    status="visual",
+    evidence="screenshots/step_06.png — '29 Questions · 29 Points · 29 mins' after import",
+)
 IMPORT_DIALOG_TITLE = Sel(
     "import_dialog_title",
     (
@@ -546,14 +578,6 @@ CHANGE_TIME_BUTTON = Sel(
     status="visual",
     evidence='screenshots/step_15.png — "Change" next to "Start – End time"',
 )
-NO_DEADLINE_DIALOG_MARKER = Sel(
-    "no_deadline_dialog_marker",
-    (
-        ("text", "No deadline", False),
-    ),
-    status="unverified-dom",
-    evidence="manual flow Part 1 step 9 — no screenshot provided; toggle role unknown",
-)
 NO_DEADLINE_TOGGLE = Sel(
     "no_deadline_toggle",
     (
@@ -567,8 +591,9 @@ NO_DEADLINE_TOGGLE = Sel(
             "//*[@role='switch' or @role='checkbox' or @type='checkbox'][1]",
         ),
     ),
-    status="unverified-dom",
-    evidence="manual flow Part 1 step 9 — state must be read before clicking (never blind-toggle)",
+    status="visual",
+    evidence="screenshots/step_22.png — switch on the 'End time' row, label 'No deadline'; "
+    "state must be read before clicking",
 )
 SAVE_AND_CLOSE_BUTTON = Sel(
     "save_and_close_button",
@@ -576,8 +601,32 @@ SAVE_AND_CLOSE_BUTTON = Sel(
         ("role", "button", "Save and close"),
         ("text", "Save and close", True),
     ),
-    status="unverified-dom",
-    evidence="manual flow Part 1 step 9",
+    status="visual",
+    evidence="screenshots/step_23.png — pink footer button of the Start – End time modal",
+)
+DEADLINE_APPLIED_TEXT = Sel(
+    "deadline_applied_text",
+    (
+        ("regex", r"No deadline"),
+    ),
+    status="visual",
+    evidence="screenshots/step_24.png — details row then reads 'Start immediately – No deadline'",
+)
+CLASS_SELECTED_HINT = Sel(
+    "class_selected_hint",
+    (
+        ("text", "Pick specific students", False),
+    ),
+    status="visual",
+    evidence="screenshots/step_18.png — link appears only once a class row is checked",
+)
+CLASS_ASSIGNED_MARKER = Sel(
+    "class_assigned_marker",
+    (
+        ("text", "Session will be assigned", False),
+    ),
+    status="visual",
+    evidence="screenshots/step_22/24.png — 'Session will be assigned to 1 class' + class chip",
 )
 SELECT_A_CLASS_BUTTON = Sel(
     "select_a_class_button",
@@ -595,8 +644,8 @@ MODIFY_CLASS_BUTTON = Sel(  # pre-selected class from an earlier run
         ("role", "button", "Change class", False),
         ("text", "Modify", True),
     ),
-    status="unverified-dom",
-    evidence="upstream page shows 'Modify' after a class is chosen; Part 14 lists this as ambiguous",
+    status="visual",
+    evidence="screenshots/step_24.png — 'Session will be assigned to 1 class' + Modify (pencil) button",
 )
 CLASS_DIALOG_TITLE = Sel(
     "class_dialog_title",

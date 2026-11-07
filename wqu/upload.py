@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -44,7 +44,7 @@ _SPLIT_RE = re.compile(r"^(?P<base>.+?)_pt(?P<n>\d+)\.xlsx$", re.IGNORECASE)
 _OPTIONAL_LITERAL = "optional"
 
 
-class QType(str, Enum):
+class QType(StrEnum):
     MULTIPLE_CHOICE = "Multiple Choice"
     CHECKBOX = "Checkbox"
     FILL_IN_BLANK = "Fill-in-the-Blank"
