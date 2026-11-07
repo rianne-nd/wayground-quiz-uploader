@@ -17,7 +17,7 @@ first unticked item. Do not restart from scratch.
 - [x] 9. Split-file output formatting + natural sort — LIVE: pt2 OK (gc=35896595); pt1 hit a transient publish stall, re-run resumed the draft → OK (gc=47955219)
 - [x] 10. Tests + CI green — 61 unit tests pass, ruff clean; CI workflow pushed (first cloud run: check Actions tab)
 - [x] 11. README + ARCHITECTURE + docs — README (4 chunks), ARCHITECTURE, docs/{selectors,troubleshooting,api-notes}.md
-- [ ] 12. Tag v0.1.0
+- [x] 12. Tag v0.1.0 — annotated tag pushed; remaining manual items for the user are listed in MORNING.md
 
 ## Log
 
