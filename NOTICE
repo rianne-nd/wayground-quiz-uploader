@@ -1,0 +1,25 @@
+NOTICE
+======
+
+wayground-quiz-uploader (wqu)
+Copyright (c) 2026 Kath Puno
+Licensed under the MIT License (see LICENSE).
+
+Third-party code
+----------------
+
+This project vendors a copy of `wayground.py` from:
+
+  wayground-quiz-creator-skill
+  https://github.com/littleyi22/wayground-quiz-creator-skill
+  Copyright (c) littleyi22
+  Licensed under the MIT License
+
+The vendored copy lives at `wqu/vendor/wayground_upstream.py` and preserves
+the original MIT header at the top of the file. It is included verbatim for
+reference and reuse; it is not fetched at runtime.
+
+Runtime dependencies (installed via pip, not vendored):
+  - Playwright (Apache-2.0)
+  - openpyxl (MIT)
+  - rich (MIT)

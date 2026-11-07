@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Local state and secrets — never commit
+*.har
+wqu-logs/
+snaps/
+.env
+
+# Quiz workbooks: generated artifacts are ignored, committed fixtures are kept
+*.xlsx
+!tests/fixtures/*.xlsx
+
+# OS noise
+Thumbs.db
+Desktop.ini
+.DS_Store
