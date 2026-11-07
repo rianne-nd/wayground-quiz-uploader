@@ -115,7 +115,10 @@ def natural_sort_key(item: str) -> tuple:
     """
     name = str(item).replace("\\", "/").split("/")[-1].lower()
     split = _SPLIT_RE.match(name)
-    base = split.group("base") if split else name
+    if split:
+        base = split.group("base")
+    else:
+        base = re.sub(r"\.xlsx$", "", name)
     chunks = re.split(r"(\d+)", base)
     key: list = []
     for i, chunk in enumerate(chunks):

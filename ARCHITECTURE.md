@@ -1,0 +1,154 @@
+# Architecture
+
+`wqu` publishes Quiz Toolkit `.xlsx` workbooks to Wayground (formerly
+Quizizz) by driving a real Chromium browser with Playwright's **sync** API.
+It is designed as a library first; the CLI is one consumer, a future GUI is
+another.
+
+## Layering
+
+```
+wqu/cli.py            the ONLY module that prints, prompts, or parses argv
+   │
+wqu/core.py           the public import surface (re-exports only)
+   │
+   ├── wqu/publish.py   publish_one() / publish_many(): per-file pipeline
+   ├── wqu/assign.py    assign_one(): quiz page → homework → class → name →
+   │                    No deadline → final Assign → gameplay page
+   ├── wqu/session.py   Session: login/check/doctor/discover, browser lifetime
+   ├── wqu/upload.py    load_xlsx()/preview_errors(): Part-1.5 validation
+   ├── wqu/output.py    FileResult, format_links/format_json/summary, clipboard
+   ├── wqu/selectors.py selector registry + Playwright interaction helpers
+   ├── wqu/store.py     ~/.wayground/created.json tracking
+   ├── wqu/errors.py    exception taxonomy (cli maps to exit codes)
+   └── wqu/logging_setup.py  file logs under ./wqu-logs (max 50, rotated)
+```
+
+`wqu/vendor/wayground_upstream.py` is a verbatim MIT copy of littleyi22's
+`wayground.py` (see NOTICE); nothing imports it at runtime.
+
+## The GUI-ready contract (and how it is enforced)
+
+1. **Core returns data; only `cli.py` prints.** All core functions return
+   dataclasses (`FileResult`, `PublishResult`, `AssignResult`, `QuizData`…).
+2. **Progress via callback.** Long-running functions accept
+   `on_progress: Callable[[str], None] | None`; the CLI passes a stderr
+   printer, a GUI would pass a progress bar.
+3. **Cancellation via callback.** `publish_many` accepts
+   `should_cancel: Callable[[], bool] | None`, checked at the top of each
+   file loop iteration.
+4. **No module-level mutable state.** Browser state lives in an explicit
+   `Session` object; configuration in the `PipelineOptions` dataclass; both
+   are passed as parameters.
+5. **Sync Playwright, no asyncio.** Safe to run in a worker thread later.
+6. **REPL-usable.** `from wqu.core import publish_one, PipelineOptions` works
+   with no CLI, no prompts, no globals.
+
+`tests/test_core_purity.py` mechanically asserts that core modules contain no
+`print()` calls and never import `rich`/`typer`/`asyncio`;
+`tests/test_acid.py` is the Part-2.6 acid test with a mocked browser.
+
+## Per-file pipeline (`publish_many`)
+
+```
+for each file (should_cancel checked here):
+  load_xlsx + validate ──(errors)──▶ FileResult(error="local validation failed…")
+  duplicate-title check vs ~/.wayground/created.json (unless --force)
+      ├─ skip  ▶ FileResult(skipped=True)
+      ├─ resume ▶ open the existing editor
+      └─ new   ▶ create: assessment page → "Start from scratch" → /edit
+  record created quiz id in created.json
+  resume with existing questions? skip import (prevents duplicates)
+  otherwise: scroll → "Spreadsheet" → set_input_files → wait banner
+      ├─ green "Looks good!"            ▶ click Import
+      └─ red "Invalid correct option"   ▶ scrape rows (heuristic) + Cancel;
+                                          continue only with --force-import
+  publish modal: Name + Subject + Grade → modal Publish
+      └─ note: an unchanged already-published quiz skips the modal entirely
+  (decide_assign callback: CLI prompt / --assign / --no-assign / GUI)
+  assign_one:  Assign → [accommodations glitch recovery] → class modal
+               (tick Naic, force-uncheck accommodations, Next) →
+               name modal (title, keep unchecked, Next) →
+               Change → No deadline ON (state-read, never blind) →
+               Save and close → verify "No deadline" on the page →
+               final Assign (rightmost match) → gameplay page
+  extract join link: DOM scan → "Copy Join link" + clipboard (sentinel-poisoned
+                     so stale links can't leak between files) → DOM rescan
+  FileResult(...) + created.json update
+```
+
+One browser + one context are shared across the loop; a Playwright trace is
+kept for the run and saved to `wqu-logs/<ts>.trace.zip` on the first failure.
+
+## Why DOM automation (Path B)
+
+No HAR capture was available, so the API-first path could not be evaluated
+without guessing endpoints — forbidden by the brief. The DOM path was chosen
+explicitly; see `docs/api-notes.md`. The vendored upstream skill confirmed
+Wayground exposes stable hooks; live probing then found real `data-testid`s
+for most controls (see `docs/selectors.md`). Swapping individual steps to HTTP
+calls later is a local change: the pipeline only calls `publish.py` /
+`assign.py` functions.
+
+## Hard-won behaviours (LIVE 2026-11-08)
+
+- **aria-label overrides**: the top-bar Publish button's accessible name is
+  "Publish quiz"; the modal X is "xmark"; several buttons expose icon aria
+  names ("chevron-left", "copy", "trash").
+- **Modals stack**: reaching the name-assignment step leaves the class modal
+  mounted beneath it. Never wait for a previous modal to *hide*; wait for the
+  *next* observable state.
+- **The accommodations glitch**: the full-page "Set up learning supports"
+  screen interferes right after the quiz-page Assign *or* after clicking
+  "Select a class". Recovery = click the back arrow ("chevron-left"), then
+  resume the flow (re-click Assign / let the modal open).
+- **Default-checked checkbox**: "Set up Accommodations" flips to CHECKED as
+  soon as a class row is selected (both modals) and must be force-unchecked.
+- **Styled inputs**: checkboxes/switches are real `<input>` elements covered
+  by decorative knobs; Playwright's actionability check times out, so
+  `selectors.click_control()` falls back to a JS `el.click()`.
+- **Lazily rendered sections**: "Import existing files" mounts only near the
+  bottom of an *empty* editor and disappears once questions exist; resumed
+  drafts with questions skip the import to avoid duplicates.
+- **Republishing unchanged quizzes** navigates straight to the quiz page
+  without showing the publish modal — treated as success.
+- **Coachmarks** ("Sessions is now Reports → Got it") intercept clicks until
+  dismissed.
+- **Clipboard safety**: the clipboard is poisoned with a sentinel before
+  clicking "Copy Join link" so a stale link from a previous file can never be
+  mistaken for a fresh one. Links are validated against the join-link regex
+  and never fabricated.
+
+## Errors, exit codes, artifacts
+
+`wqu/errors.py` defines the taxonomy; `publish_many` converts per-file
+failures into `FileResult(error=…, error_kind=…)` and keeps going (unless
+`--fail-fast`, or the kind is `session-expired`).
+
+| Exit | Meaning |
+|---|---|
+| 0 | every file succeeded (skips count as success) |
+| 1 | at least one file failed |
+| 2 | configuration/session problem (run `wqu login`, class not found, bad args) |
+
+Per failure: full-page screenshot `wqu-logs/<ts>-<file>.png` and (first
+failure of the run) a Playwright trace `wqu-logs/<ts>.trace.zip` for
+`trace.playwright.dev`. Logs rotate at 50 files.
+
+## State on disk
+
+| Path | Contents |
+|---|---|
+| `~/.wayground/state.json` | Playwright storage state (cookies) — never logged, never uploaded anywhere but wayground.com |
+| `~/.wayground/created.json` | quizzes created/assigned by wqu (duplicate detection, resume, audit) |
+| `./wqu-logs/` | logs, screenshots, traces |
+| `./snaps/` | `wqu discover` DOM/aria/screenshot dumps |
+
+## Output contract
+
+- stdout: the `Label: URL` block (or `--json` array, or the dry-run plan).
+- stderr: progress, warnings, the per-file summary, log path.
+- Clipboard: the stdout block is copied in human mode only (never for
+  `--json`, `--dry-run`, `--quiet`).
+- Split labels normalize `_pt1` → `_Pt1` on output; natural sort orders
+  `_pt1, _pt2, …, _pt10`.

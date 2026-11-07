@@ -466,7 +466,12 @@ def publish_quiz(
                     hints.append(text)
         raise PublishError("the publish modal rejected the form: " + ("; ".join(hints) or "required fields missing"))
     if outcome is None:
-        raise PublishError("timed out waiting for the publish modal to close")
+        # LIVE 2026-11-08: observed once — the modal button entered its loading
+        # state but no publish request left the browser (network/server stall).
+        raise PublishError(
+            "the app did not finish publishing within 60s (modal button still loading). "
+            "The quiz remains a draft; re-running this file resumes it."
+        )
 
     page.wait_for_url(_QUIZ_PAGE_RE, timeout=30_000)
     _log(on_progress, "Quiz published; closing the success modal...")

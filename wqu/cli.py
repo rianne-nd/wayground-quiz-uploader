@@ -44,9 +44,6 @@ from wqu.store import default_state_path
 
 DEFAULT_CLASS = "Naic"  # the interactive branch answer "y" assigns to this class
 
-console = Console(file=sys.stderr, soft_wrap=True)
-out = Console(file=sys.stdout, soft_wrap=True)
-
 
 def err(message: str = "") -> None:
     print(message, file=sys.stderr)
@@ -111,6 +108,7 @@ def collect_files(paths: list[str], toolkit_root: str | None) -> list[Path]:
 
 def run_dry_run(files: list[Path], options: PipelineOptions) -> int:
     """Validate every workbook; print a plan table to stdout. No browser."""
+    out = Console(file=sys.stdout, soft_wrap=True)  # resolved per call so tests can capture it
     table = Table(title="wqu publish --dry-run", show_lines=False)
     table.add_column("File")
     table.add_column("Label / title")

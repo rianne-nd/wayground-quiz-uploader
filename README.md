@@ -1,28 +1,210 @@
 # wayground-quiz-uploader (`wqu`)
 
-**One command to take the `.xlsx` quizzes your Quiz Toolkit produces and publish
-them to Wayground (formerly Quizizz) — with an optional class assignment and a
-ready-to-paste join link.**
+**Turn the `.xlsx` quiz workbooks your Quiz Toolkit produces into published
+Wayground (formerly Quizizz) quizzes — with an optional class assignment and a
+ready-to-paste join link — from a single command.**
 
-Status: under construction (v0.1.0). Full documentation lands with the release.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/rianne-nd/wayground-quiz-uploader/actions/workflows/ci.yml/badge.svg)](https://github.com/rianne-nd/wayground-quiz-uploader/actions/workflows/ci.yml)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+
+```text
+PS> wqu publish "Quizzes\DataComs\_QuizizzOutput" --assign Naic
+DataComs_Mod14: https://wayground.com/join?gc=24923411&source=liveDashboard
+DataComs_Mod15: https://wayground.com/join?gc=24923488&source=liveDashboard
+```
+
+> **Demo:** `docs/demo.gif` — TODO (record with `--no-headless`; placeholder
+> until the walkthrough video is captured).
+
+- Uploads workbooks through the real import flow (spreadsheet preview +
+  "Looks good!" check) and **refuses broken files** instead of publishing them.
+- Publishes with your usual metadata (Subject *Information Technology (IT)*,
+  Grade *University*) — configurable via flags.
+- Optionally assigns to a class (e.g. `Naic`), sets **No deadline**, names the
+  assignment, and **always unchecks "Set up Accommodations"**.
+- Copies the formatted `QuizName: <join link>` block to your clipboard.
+- Handles the realities of the live UI: the premium popup, the "Sessions is
+  now Reports" tip, and the intermittent full-page *Set up Accommodations*
+  redirect (it clicks the back arrow and carries on).
+
+*The Windows walkthrough, command reference, and limitations continue below.*
 
 ## Install (Windows PowerShell)
 
 ```powershell
+git clone https://github.com/rianne-nd/wayground-quiz-uploader
+cd wayground-quiz-uploader
 pip install -e .
-playwright install chromium
+python -m playwright install chromium
 ```
 
-## Quickstart
+Requires Python 3.11+.
+
+## Quickstart (three commands)
 
 ```powershell
-wqu login    # once: sign in to Wayground in the opened browser
-wqu check    # verify the saved session still works
+wqu login    # opens a browser: sign in to Wayground, then press Enter here
+wqu check    # verify: expect [OK] Session is valid.
+wqu publish tests\fixtures\sample_single.xlsx --no-headless --no-assign
+```
+
+The canonical one-liner once you're set up:
+
+```powershell
 wqu publish "Quizzes\DataComs\_QuizizzOutput" --assign Naic
 ```
 
-See `PROGRESS.md` for the build checklist and `docs/` for architecture notes.
+See what would happen without launching a browser:
+
+```powershell
+wqu publish "Quizzes\DataComs\_QuizizzOutput" --dry-run
+```
+
+## What a run does, step by step
+
+1. Validates every workbook locally (sheet `Create a Quiz`, 11 columns,
+   1-based `Correct Answer` indices).
+2. Creates the quiz ("Start from scratch"), opens the spreadsheet import,
+   waits for the preview banner, and clicks **Import** only on "Looks good!"
+   (a red "Invalid correct option" banner aborts that file and saves a
+   screenshot; `--force-import` overrides).
+3. Fills the publish modal (Name / Subject / Grade) and publishes.
+4. Asks per file whether to assign (or use `--assign Naic` /
+   `--no-assign`), sets **No deadline**, names the assignment, unchecks
+   "Set up Accommodations", clicks **Assign**.
+5. Clicks **Copy Join link** and prints:
+
+   ```text
+   QuizName: https://wayground.com/join?gc=24923411&source=liveDashboard
+   ```
+
+   Split files (`*_pt1.xlsx`, `*_pt2.xlsx`, …) print `QuizName_Pt1:`, `_Pt2:`
+   in natural order. An unassigned quiz with no join link prints the quiz URL
+   plus `(NO JOIN LINK — published but not assigned)` — links are never
+   fabricated.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `wqu login` | Opens a browser for manual sign-in; saves the session to `~/.wayground/state.json`. |
+| `wqu check` | Reloads the session and probes a protected page: `[OK]` or `[EXPIRED]`. |
+| `wqu doctor` | Environment diagnostics: Python, Playwright + Chromium, session age, network, logs dir, openpyxl. |
+| `wqu discover <url>` | Opens the URL headed; on Ctrl+C saves HTML/aria/screenshot to `./snaps/` — the canonical way to re-verify selectors. |
+| `wqu publish <path>...` | Files and/or folders; the full pipeline. |
+
+### `wqu publish` flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--subject "Information Technology (IT)"` | as shown | subject in the publish modal |
+| `--grade University` | `University` | grade in the publish modal |
+| `--title <name>` | derived from filename | quiz title (single file only); `Quizizz_` is stripped, `_pt<N>` → `_Pt<N>` |
+| `--assign <class>` | — | force-assign to this class (skips the prompt) |
+| `--no-assign` | — | never assign; suppresses the prompt |
+| `--no-deadline` / `--deadline` | no deadline | `--deadline` reserved for future use |
+| `--no-headless` | off (headless) | show the browser window |
+| `--dry-run` | off | validate only; no browser |
+| `--json` | off | machine-readable array: `file`, `title`, `quiz_url`, `join_link`, `assigned`, `error` |
+| `--quiet` | off | only the `Label: URL` lines on stdout |
+| `--keep-draft` | off | publish but skip assignment |
+| `--force` | off | skip duplicate-title detection |
+| `--fail-fast` | off | stop on the first failed file (default: skip and continue) |
+| `--force-import` | off | DANGEROUS: import despite preview errors |
+| `--interactive-review` | off | pause after each publish, show the URL, Enter before assigning |
+| `--yes` | off | non-interactive defaults for all prompts |
+| `--from-toolkit-root <path>` | — | auto-discover `Quizzes\*\_QuizizzOutput\*.xlsx` under this root |
+
+Output rules: everything status-like goes to **stderr**; the final
+`Label: URL` block (or `--json`) goes to **stdout** and is copied to your
+clipboard in human mode only. Exit codes: `0` all good, `1` a file failed,
+`2` configuration/session problem (e.g. run `wqu login` again).
+
+Troubleshooting and recovery (expired sessions, red banners, where traces
+land): see [docs/troubleshooting.md](docs/troubleshooting.md). Selector
+inventory: [docs/selectors.md](docs/selectors.md).
+
+## Relationship to the Quiz Toolkit
+
+The **Quiz Toolkit** (PowerShell, separate repo) converts AI-formatted text
+into Quizizz-ready `.xlsx` workbooks. **This tool picks up where it ends:** it
+consumes those `.xlsx` files and publishes them to Wayground. The two never
+touch each other's files — the handoff is a folder of workbooks, which is
+exactly what the canonical one-liner uses:
+
+```powershell
+wqu publish "Quizzes\DataComs\_QuizizzOutput" --assign Naic
+```
+
+…or, without copy-pasting paths, from the toolkit root:
+
+```powershell
+wqu publish --from-toolkit-root "C:\path\to\quiz-toolkit" --assign Naic
+```
+
+## Library usage (no CLI)
+
+The automation core is a plain Python library — a future GUI is a thin wrapper
+around the same calls:
+
+```python
+from pathlib import Path
+from wqu.core import PipelineOptions, Session, publish_one
+
+options = PipelineOptions(assign_class="Naic", headless=True)
+
+def progress(message: str) -> None:
+    print(message)  # a GUI would update a progress bar instead
+
+result = publish_one(Path(r"Quizzes\DataComs\_QuizizzOutput\DataComs_Mod14.xlsx"),
+                     options, on_progress=progress)
+print(result.join_link)   # https://wayground.com/join?gc=...&source=liveDashboard
+```
+
+`publish_many(files, options, session=..., on_progress=..., should_cancel=...)`
+adds batching with one browser session, a per-file assign decision callback,
+and between-files cancellation — the pieces a GUI needs on day one.
+
+## Known limitations
+
+- **Session expiry:** Wayground sessions expire; when they do, `wqu check`
+  prints `[EXPIRED]` and runs exit with "run `wqu login` again". Re-login is
+  a manual step by design.
+- **UI drift:** this is DOM automation. Wayground ships UI changes; if a
+  selector breaks you get a screenshot + Playwright trace in `wqu-logs/`.
+  Re-verify with `wqu discover <url>` and update `wqu/selectors.py`
+  (statuses are tracked in `docs/selectors.md`).
+- **Resume re-publishes:** resuming an existing draft re-runs publish
+  (metadata is re-applied). If the draft already has questions, the import is
+  skipped to avoid duplicates; delete unwanted rows in the editor first.
+- **Interactions taken from live probing are noted in ARCHITECTURE.md**
+  (stacked modals, styled inputs, glitch recovery). They are defensive, but a
+  Wayground redesign can still break them.
+- MIT-licensed derivative work: portions originate from littleyi22's
+  [wayground-quiz-creator-skill](https://github.com/littleyi22/wayground-quiz-creator-skill)
+  (see `NOTICE`).
+
+## Security notes
+
+- Session cookies live in `~/.wayground/state.json` (chmod 600 on Unix;
+  Windows ACL inheritance). They are sent only to `wayground.com` by the
+  browser itself — `wqu` never transmits them anywhere else.
+- Cookie values are never logged. `wqu-logs/*.log` contains progress and
+  errors only.
+- `docs/` HAR captures (if you ever make one) contain session cookies: keep
+  them gitignored (they are), never commit them.
+
+## Development
+
+```powershell
+pip install -e ".[dev]"
+ruff check .
+pytest -m "not integration"     # unit tests, no browser
+$env:WQU_INTEGRATION="1"; pytest -m integration   # live, opt-in, needs wqu login
+```
 
 ## License
 
-MIT — see `LICENSE`. Vendored components and attribution: see `NOTICE`.
+MIT — see [LICENSE](LICENSE). Attribution for vendored code:
+[NOTICE](NOTICE).

@@ -71,3 +71,13 @@ analysis and move stable steps (upload/publish) to HTTP calls per Path A.
 The pipeline is layered so per-step swaps are local: `publish.py` orchestrates
 `upload.py` (validation) and DOM actions kept behind functions in
 `publish.py`/`assign.py`/`selectors.py`.
+
+## Update — 2026-11-08 (post-build, live)
+
+The DOM path is fully implemented and **live-verified end-to-end** (headless)
+against the real account: create → import → publish → assign → join link.
+Live probing replaced most guesses with real hooks (`data-testid`s etc. —
+see `docs/selectors.md`). For the record, the trace network log shows the
+import flows do talk to `wayground.com/_api/main/upload-quiz` and
+`_quizserver/main/v3/quiz/{id}/version/{vid}/questions`, and there is a quiz
+metadata GET — useful hints if Path A is ever revisited with a HAR.
