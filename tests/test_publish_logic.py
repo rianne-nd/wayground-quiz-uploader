@@ -149,6 +149,33 @@ def test_finish_publish_quiet_is_plain(capsys, monkeypatch: pytest.MonkeyPatch) 
     assert "wqu results" not in captured.out
 
 
+def test_finish_publish_reports_file_times(capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+    from wqu import cli
+
+    monkeypatch.setattr(cli, "copy_to_clipboard", lambda text: True)
+    results = [FileResult(file="a.xlsx", title="A", quiz_url=QUIZ_URL, join_link=LINK, assigned=True)]
+
+    class FakeUI:
+        file_times = [12.3]
+
+    rc = cli.finish_publish(Namespace(json=False, quiet=False), results, ui=FakeUI())
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "12.3s" in captured.err                 # Time column in the summary table
+
+
+def test_result_panel_has_no_side_borders(capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+    from wqu import cli
+
+    monkeypatch.setattr(cli, "copy_to_clipboard", lambda text: True)
+    results = [FileResult(file="a.xlsx", title="A", quiz_url=QUIZ_URL, join_link=LINK, assigned=True)]
+    cli.finish_publish(Namespace(json=False, quiet=False), results)
+    out = capsys.readouterr().out
+    body_lines = [line for line in out.splitlines() if LINK in line]
+    assert body_lines and not body_lines[0].startswith("│")  # HORIZONTALS box
+    assert not any(line.startswith("│") for line in out.splitlines())
+
+
 # --- clipboard ---------------------------------------------------------------
 
 

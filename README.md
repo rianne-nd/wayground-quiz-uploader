@@ -85,12 +85,32 @@ wqu publish "Quizzes\DataComs\_QuizizzOutput" --dry-run
 
    (A quiz can be assigned publicly without a class — that is a supported
    Wayground path, not a skip.)
-5. Clicks **Copy Join link** and prints a panelized result:
+   While this runs, a **live step tree** shows exactly where the automation
+   is (✓ done, ⠸ active with a running timer, `–` skipped, `✗` failed with
+   the error inline), plus an overall files bar:
 
    ```text
-   ┌──────────────────────────── wqu results ─────────────────────────────┐
-   │ QuizName: https://wayground.com/join?gc=24923411&source=liveDashboard │
-   └───────────────────────────────────────────────────────────────────────┘
+   Overall: ████████░░░░░░░░░░░░░░░░ 1/3 files (24.5s elapsed)
+
+   ┌─ [2/3] DataComs_Mod15.xlsx ────────────────────────────────────┐
+   │  Steps: ████████████████████░░░░ 28/33 (5.2s elapsed)          │
+   │  ├─ ✓ Preview validated (Looks good!)               [00.9s]    │
+   │  ├─ ⠸ Clicking final Assign                        [ 3.2s...]  │
+   │  └─ - Copying join link                           [ waiting ]  │
+   └────────────────────────────────────────────────────────────────┘
+   ```
+
+5. Clicks **Copy Join link** and prints a borderless result block (no `│`
+   characters, so double-click selection copies cleanly) plus a summary
+   table with per-file timings:
+
+   ```text
+   ─────────────────────────── wqu results ───────────────────────────
+   QuizName: https://wayground.com/join?gc=24923411&source=liveDashboard
+   ────────────────────────────────────────────────────────────────────
+   File                 Status   Time      Join link / detail
+   sample_single.xlsx   OK       52.1s     https://wayground.com/join?gc=…
+   Processed 1 files: 1 success, 0 failure
    ```
 
    Split files (`*_pt1.xlsx`, `*_pt2.xlsx`, …) print `QuizName_Pt1:`, `_Pt2:`

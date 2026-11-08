@@ -304,7 +304,7 @@ def _wait_questions_loaded(page: Page, *, timeout_ms: int = 45_000) -> None:
 
 def create_quiz(page: Page, *, on_progress: ProgFn = None) -> str:
     """Assessment chooser -> 'Start from scratch' -> editor; returns quiz_id."""
-    _log(on_progress, "Creating a new quiz (Start from scratch)...")
+    _log(on_progress, "Navigating to the assessment page...")
     page.goto(S.URL_ASSESSMENT, wait_until="domcontentloaded", timeout=60_000)
     guard_session(page)
     dismiss_premium_popup(page, on_progress)  # brief: almost always shown on first load
@@ -676,6 +676,7 @@ def publish_many(
     decide_assign: DecideAssignFn | None = None,
     resolve_duplicate: ResolveDuplicateFn | None = None,
     choose_archive: lib.ChooseArchiveFn | None = None,
+    on_result: Callable[[FileResult], None] | None = None,
 ) -> list[FileResult]:
     """Run the pipeline over many workbooks with ONE browser session.
 
@@ -684,7 +685,8 @@ def publish_many(
     file whether to assign and to which class, after the quiz is published.
     ``choose_archive`` is asked (interactive CLI / GUI) when the free-tier
     library cap would be exceeded; ``options.auto_archive_oldest`` archives
-    automatically without prompting.
+    automatically without prompting. ``on_result`` fires after each file's
+    ``FileResult`` is appended (the CLI uses it to close the live step tree).
     """
     options = options or PipelineOptions()
     session = session or Session(state_path=options.state_path, logs_dir=options.logs_dir)
@@ -727,6 +729,11 @@ def publish_many(
                 result = _failure_result(handle, file, options, run_id,
                                          f"{exc.__class__.__name__}: {exc}", on_progress)
             results.append(result)
+            if on_result is not None:
+                try:
+                    on_result(result)
+                except Exception:
+                    log.debug("on_result callback failed", exc_info=True)
             if result.error_kind == "session-expired":
                 _log(on_progress, "Session expired; stopping the run.")
                 break

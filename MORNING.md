@@ -23,6 +23,14 @@ Delete them in the Wayground UI when convenient:
 > The `DataComs_Mod14` row above was created by that verification run. See
 > `PROGRESS.md` → Log for details.
 >
+> **Update 2026-11-09 (v0.1.3):** live step-tree UI (✓/⠸/–/-/✗ per step with
+> per-step timings, overall files bar, error line inside the tree), prompts
+> pause/resume the Live region (fixes the mangled `[r]esume` prompt),
+> result block switched to borderless `HORIZONTALS`, summary table gained a
+> **Time** column. Live-verified: full run in 36.8s, exit 0, join link
+> `gc=24392467`; the `WQU_V013_TEST` quiz it created was archived through
+> the library module (counter back to ~10/20). 93 unit tests pass.
+>
 > **Update 2026-11-09 (v0.1.2):** CLI redesign (banner, live progress line,
 > coloured steps, summary table), speed-ups (instant coachmark/glitch checks,
 > immediate public Assign), and the library manager (`wqu library`,

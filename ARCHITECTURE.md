@@ -241,19 +241,43 @@ session; any *read* failure is logged and skipped (never blocks a run), while
 a real cap problem aborts cleanly. `wqu library` opens the same page headed
 for manual management.
 
-## Terminal UX & speed (v0.1.2)
+## Terminal UX & speed (v0.1.3)
 
 - **Banner:** every command starts with a blue rich Panel showing the version.
-- **Live progress:** `publish` renders one live line on **stderr** —
-  spinner + bar + `[i/n] files` + the current step — via `ProgressUI`.
-  stdout stays reserved for the result block/JSON. Interactive prompting
-  mode deliberately falls back to plain styled lines so prompts stay clean.
-- **Colour rules:** cyan = info, green = success, yellow = warning,
-  red = error (`ProgressUI._classify`).
-- **Summary table:** after a batch, a `rich.table` lists File / Status /
-  Join link (errors inline), followed by the `Processed …` caption.
-- **Clipboard before panel:** the human result block is copied first, then
-  the boxed panel is printed (then the summary table) with spacing.
+- **Live step tree (`wqu/ui.py` → `LiveTreeUI`):** `publish` renders a
+  continuously-updating `rich.live.Live` region on **stderr** (stdout stays
+  reserved for the result block/JSON):
+
+      Overall: ████████░░░░░░░░░░░░░░░░ 1/3 files (24.5s elapsed)
+
+      ┌─ [2/3] DataComs_Mod15.xlsx ────────────────────────────────────┐
+      │  Steps: ████████████████████░░░░ 28/33 (5.2s elapsed)          │
+      │                                                                │
+      │  ├─ ✓ Attaching workbook                            [00.8s]    │
+      │  ├─ ⠸ Clicking final Assign                        [ 3.2s...]  │
+      │  ├─ - Copying join link                           [ waiting ]  │
+      │  └─ ...                                                        │
+      └────────────────────────────────────────────────────────────────┘
+
+  A catalog of ~33 expected steps (`ui.STEP_CATALOG`) is matched against the
+  `on_progress` messages; ✓ green = done, ⠸ cyan = active (animates, timer
+  ticks via `perf_counter`), `–` dim = skipped branch step, `-` dim = still
+  pending, `✗` red + an indented `ERROR:` line = failed step (the core
+  aborts that file; the tree freezes until the next `[i/n]` resets it).
+- **Prompts vs Live (`[r]esume / [s]kip / [n]ew`, assign, archive):**
+  every interactive prompt goes through `ui.pause()` … `input()` …
+  `ui.resume()` (see `cli._prompt_line` and `make_choose_archive`), so the
+  redraw can never mangle the prompt line. This replaces the v0.1.2
+  workaround that disabled the live UI in interactive mode.
+- **Non-TTY fallback:** when stderr is a pipe (logs, CI, tests), the UI emits
+  plain styled lines instead of Live frames; file timings are still recorded
+  for the summary table.
+- **Result block without side borders:** the stdout panel uses
+  `box=box.HORIZONTALS`, so double-click selection in PowerShell/Windows
+  Terminal no longer includes `│` characters.
+- **Summary table:** File / Status / **Time** / Join link (errors inline),
+  followed by the `Processed …` caption. Clipboard copy happens before the
+  block is printed.
 - **Speed**: coachmark ("Got it") checks are instant `is_visible()` probes
   with a single 400 ms grace right after page load; the accommodations page
   is probed instantly and recovered with bounded ~1.2 s re-checks instead of

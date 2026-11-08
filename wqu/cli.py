@@ -15,15 +15,13 @@ Exit codes: 0 all good; 1 at least one file failed; 2 config/session problem.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
+from rich import box
 from rich.box import SIMPLE as BOX_SIMPLE
-from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
@@ -49,6 +47,8 @@ from wqu.errors import LibraryLimitError
 from wqu.logging_setup import setup_logging
 from wqu.publish import publish_many
 from wqu.store import default_state_path
+from wqu.ui import LiveTreeUI, err_console, out_console, print_banner
+from wqu.ui import classify as _classify
 
 DEFAULT_CLASS = "Naic"  # the interactive branch answer "y" assigns to this class
 
@@ -61,114 +61,9 @@ def progress(message: str) -> None:
     err(message)
 
 
-def err_console() -> Console:
-    """Fresh stderr console per call (so tests/capsys capture correctly).
-
-    legacy_windows=False forces the nice unicode box glyphs; main() already
-    reconfigures the streams to UTF-8 on Windows consoles.
-    """
-    return Console(file=sys.stderr, soft_wrap=True, highlight=False, legacy_windows=False)
-
-
-def print_banner(subtitle: str = "") -> None:
-    line = Text.assemble(
-        ("wqu ", "bold white"),
-        (f"v{__version__}", "bold cyan"),
-        ("  •  Wayground quiz uploader", "white"),
-    )
-    if subtitle:
-        line.append(f"  •  {subtitle}", style="dim")
-    console = err_console()
-    console.print(Panel(line, border_style="blue", padding=(0, 2)))
-    console.print("")
-
-
-_STYLE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\b(error|failed|failure|FAIL)\b", re.I), "red"),
-    (re.compile(r"\b(warning|skipped|skipping|could not|no join link|still)\b", re.I), "yellow"),
-    (
-        re.compile(
-            r"\b(published|looks good|ready|unchecked|captured|already|archived|"
-            r"room for|now at|is now ON|OK)\b",
-            re.I,
-        ),
-        "green",
-    ),
-)
-
-
-def _classify(message: str) -> str:
-    """Pick a colour for a progress message (cyan = neutral info)."""
-    for pattern, style in _STYLE_RULES:
-        if pattern.search(message):
-            return style
-    return "cyan"
-
-
-class ProgressUI:
-    """Banner + live progress/spinner UI for `wqu publish` (stderr only).
-
-    stdout stays reserved for the final result block / JSON; everything here
-    is presentation for humans. ``on_progress`` routes core callbacks into a
-    single live line: a bar with ``[i/n] files`` plus the current step.
-    """
-
-    _FILE_RE = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)$")
-
-    def __init__(self, subtitle: str = "publish") -> None:
-        self.console = err_console()
-        self.subtitle = subtitle
-        self.progress: Progress | None = None
-        self.task_id: TaskID | None = None
-
-    def banner(self) -> None:
-        print_banner(self.subtitle)
-
-    def info(self, message: str) -> None:
-        self.console.print(f"[{_classify(message)}]{escape(message)}[/]")
-
-    def start(self, total: int) -> None:
-        self.progress = Progress(
-            SpinnerColumn(style="cyan"),
-            BarColumn(bar_width=24, complete_style="cyan", finished_style="green"),
-            TextColumn("[bold]{task.completed}/{task.total} files[/bold]"),
-            TextColumn("{task.fields[step]}"),
-            console=self.console,
-        )
-        self.progress.start()
-        self.task_id = self.progress.add_task("publish", total=total,
-                                              step="[cyan]starting...[/cyan]")
-
-    def on_progress(self, message: str) -> None:
-        if self.progress is None or self.task_id is None:
-            self.info(message)
-            return
-        match = self._FILE_RE.match(message)
-        if match:
-            index = int(match.group(1))
-            if index > 1:
-                self.console.print("")  # spacing between files (major phases)
-            self.progress.update(
-                self.task_id,
-                total=int(match.group(2)),
-                completed=index - 1,
-                step=f"[bold cyan]{escape(match.group(3))}[/bold cyan]",
-            )
-        else:
-            style = _classify(message)
-            self.progress.update(self.task_id, step=f"[{style}]{escape(message)}[/{style}]")
-
-    def stop(self) -> None:
-        if self.progress is None or self.task_id is None:
-            return
-        task = self.progress.tasks[0]
-        done = task.completed >= (task.total or 0)
-        self.progress.update(
-            self.task_id,
-            step="[green]done[/green]" if done else "[yellow]stopped[/yellow]",
-        )
-        self.progress.stop()
-        self.progress = None
+# The UI helpers (err_console, print_banner, classify, LiveTreeUI) live in
+# wqu/ui.py — imported at the top of this module.  Keeping them there keeps
+# cli.py's own text to prompts/commands; core never imports wqu.ui.
 
 
 def _is_tty() -> bool:
@@ -178,14 +73,23 @@ def _is_tty() -> bool:
         return False
 
 
-def _prompt_line(prompt: str) -> str | None:
-    """input() that never explodes or hangs a non-interactive shell."""
+def _prompt_line(prompt: str, ui: LiveTreeUI | None = None) -> str | None:
+    """input() that never explodes or hangs a non-interactive shell.
+
+    When a Live UI is running it is paused for the prompt and resumed after —
+    otherwise rich's redraw mangles the prompt line (the v0.1.2 [r]esume bug).
+    """
     if not _is_tty():
         return None
+    if ui is not None:
+        ui.pause()
     try:
         return input(prompt)
     except (EOFError, KeyboardInterrupt):
         return None
+    finally:
+        if ui is not None:
+            ui.resume()
 
 
 def collect_files(paths: list[str], toolkit_root: str | None) -> list[Path]:
@@ -226,7 +130,7 @@ def collect_files(paths: list[str], toolkit_root: str | None) -> list[Path]:
 
 def run_dry_run(files: list[Path], options: PipelineOptions) -> int:
     """Validate every workbook; print a plan table to stdout. No browser."""
-    out = Console(file=sys.stdout, soft_wrap=True, legacy_windows=False)  # per call for capturability
+    out = out_console()  # per call so tests/capsys capture correctly
     table = Table(title="wqu publish --dry-run", show_lines=False)
     table.add_column("File")
     table.add_column("Label / title")
@@ -260,7 +164,16 @@ def run_dry_run(files: list[Path], options: PipelineOptions) -> int:
     return 0
 
 
-def make_decide_assign(args: argparse.Namespace):
+def _say(ui: LiveTreeUI | None, message: str, *, style: str | None = None) -> None:
+    """Print a line above/outside the Live region (plain stderr as fallback)."""
+    if ui is not None:
+        console = ui.console
+        console.print(f"[{style}]{escape(message)}[/]" if style else escape(message))
+    else:
+        err(message)
+
+
+def make_decide_assign(args: argparse.Namespace, ui: LiveTreeUI | None = None):
     """Build the per-file 'assign to which class?' callback for publish_many.
 
     Returns a callable (FileView) -> class name | None. When it is None the
@@ -275,48 +188,51 @@ def make_decide_assign(args: argparse.Namespace):
     if args.assign:
         return lambda view: args.assign
     if args.yes:
-        err(f"--yes: defaulting to a PUBLIC assignment, no class (use --assign {DEFAULT_CLASS} to assign to it).")
+        _say(ui, f"--yes: defaulting to a PUBLIC assignment, no class "
+                 f"(use --assign {DEFAULT_CLASS} to assign to it).")
         return lambda view: None
     if not _is_tty():
-        err("stdin is not interactive; defaulting to a PUBLIC assignment, no class "
-            f"(pass --assign {DEFAULT_CLASS}, --keep-draft, or --no-assign to silence this).")
+        _say(ui, "stdin is not interactive; defaulting to a PUBLIC assignment, no class "
+                 f"(pass --assign {DEFAULT_CLASS}, --keep-draft, or --no-assign to silence this).")
         return None
 
     def decide(view: FileView) -> str | None:
         if args.interactive_review and view.quiz_url:
-            err(f"      Published: {view.quiz_url}")
-            _prompt_line("      Press Enter to continue to the assignment step... ")
+            _say(ui, f"      Published: {view.quiz_url}")
+            _prompt_line("      Press Enter to continue to the assignment step... ", ui)
         note = " (split part — default N)" if view.is_split else ""
-        answer = _prompt_line(f'      Assign to class "{DEFAULT_CLASS}"? [y/N]:{note} ')
+        answer = _prompt_line(f'      Assign to class "{DEFAULT_CLASS}"? [y/N]:{note} ', ui)
         if answer is not None and answer.strip().lower() in ("y", "yes"):
             return DEFAULT_CLASS
-        err("      → public assignment (no class; 1-day deadline)")
+        _say(ui, "      → public assignment (no class; 1-day deadline)")
         return None
 
     return decide
 
 
-def make_resolve_duplicate(args: argparse.Namespace):
+def make_resolve_duplicate(args: argparse.Namespace, ui: LiveTreeUI | None = None):
     """Build the duplicate-title callback ([r]esume / [s]kip / [n]ew)."""
     if args.force:
         return None  # publish_many skips the check entirely when force=True
     if args.yes:
         def decide(info: DuplicateInfo) -> str:
-            err(f"WARNING: quiz titled {info.title!r} already exists "
-                f"({', '.join(info.prior_quiz_ids)}); creating a NEW one (--yes default).")
+            _say(ui, f"WARNING: quiz titled {info.title!r} already exists "
+                     f"({', '.join(info.prior_quiz_ids)}); creating a NEW one (--yes default).")
             return "new"
         return decide
     if not _is_tty():
         def decide_noninteractive(info: DuplicateInfo) -> str:
-            err(f"WARNING: quiz titled {info.title!r} already exists; "
-                "non-interactive run defaults to creating a NEW quiz.")
+            _say(ui, f"WARNING: quiz titled {info.title!r} already exists; "
+                     "non-interactive run defaults to creating a NEW quiz.")
             return "new"
         return decide_noninteractive
 
     def decide_interactive(info: DuplicateInfo) -> str:
-        err(f"      A quiz titled {info.title!r} was created before "
-            f"({', '.join(info.prior_quiz_ids)}).")
-        answer = _prompt_line("      [r]esume / [s]kip / [n]ew? [r]: ")
+        # LiveTreeUI.pause() inside _prompt_line keeps the [r]esume prompt
+        # from being mangled by the Live redraw (the v0.1.2 bug).
+        _say(ui, f"      A quiz titled {info.title!r} was created before "
+                 f"({', '.join(info.prior_quiz_ids)}).")
+        answer = _prompt_line("      [r]esume / [s]kip / [n]ew? [r]: ", ui)
         answer = (answer or "").strip().lower()
         if answer in ("s", "skip"):
             return "skip"
@@ -327,7 +243,7 @@ def make_resolve_duplicate(args: argparse.Namespace):
     return decide_interactive
 
 
-def make_choose_archive(args: argparse.Namespace):
+def make_choose_archive(args: argparse.Namespace, ui: LiveTreeUI | None = None):
     """Interactive library-cap chooser (rich table + prompts).
 
     Returns None when --auto-archive-oldest (handled inside the pipeline) or
@@ -341,32 +257,38 @@ def make_choose_archive(args: argparse.Namespace):
     def choose(scan, needed: int):  # noqa: ANN001 - library.LibraryScan
         from wqu.library import select_for_archive
 
-        console = err_console()
-        console.print("")
-        table = Table(
-            title=f"Library cap: {scan.total}/{scan.limit} active quizzes — "
-                  f"this batch needs {needed} more slot(s)",
-            box=BOX_SIMPLE,
-        )
-        table.add_column("#", justify="right")
-        table.add_column("Title", overflow="fold")
-        table.add_column("Age", style="dim")
-        for item in scan.items[:30]:
-            table.add_row(str(item.row_index), escape(item.title), escape(item.age_text or "?"))
-        if len(scan.items) > 30:
-            table.add_row("…", f"[dim]+{len(scan.items) - 30} more[/dim]", "")
-        console.print(table)
-        spec = Prompt.ask(
-            "Archive which? [#,# | o<N>=oldest N | a=all | Enter=skip]",
-            console=console, default="",
-        )
-        picks = select_for_archive(spec, scan, needed)
-        if not picks:
-            console.print("[yellow]Nothing selected; the run stops if the cap would be exceeded.[/yellow]")
+        console = ui.console if ui is not None else err_console()
+        if ui is not None:
+            ui.pause()  # keep the live tree from fighting the table/prompts
+        try:
+            console.print("")
+            table = Table(
+                title=f"Library cap: {scan.total}/{scan.limit} active quizzes — "
+                      f"this batch needs {needed} more slot(s)",
+                box=BOX_SIMPLE,
+            )
+            table.add_column("#", justify="right")
+            table.add_column("Title", overflow="fold")
+            table.add_column("Age", style="dim")
+            for item in scan.items[:30]:
+                table.add_row(str(item.row_index), escape(item.title), escape(item.age_text or "?"))
+            if len(scan.items) > 30:
+                table.add_row("…", f"[dim]+{len(scan.items) - 30} more[/dim]", "")
+            console.print(table)
+            spec = Prompt.ask(
+                "Archive which? [#,# | o<N>=oldest N | a=all | Enter=skip]",
+                console=console, default="",
+            )
+            picks = select_for_archive(spec, scan, needed)
+            if not picks:
+                console.print("[yellow]Nothing selected; the run stops if the cap would be exceeded.[/yellow]")
+                return ()
+            if Confirm.ask(f"Archive {len(picks)} quiz(zes)?", console=console, default=False):
+                return picks
             return ()
-        if Confirm.ask(f"Archive {len(picks)} quiz(zes)?", console=console, default=False):
-            return picks
-        return ()
+        finally:
+            if ui is not None:
+                ui.resume()
 
     return choose
 
@@ -391,7 +313,8 @@ def build_options(args: argparse.Namespace, logs_dir: Path) -> PipelineOptions:
 
 def cmd_publish(args: argparse.Namespace) -> int:
     log_path = setup_logging("publish", args.logs_dir)
-    ui = ProgressUI()
+    mode = "headed" if args.no_headless else "headless"
+    ui = LiveTreeUI(subtitle=f"publish ({mode})")
     ui.banner()
     ui.console.print(f"[dim]Log: {log_path}[/dim]")
     try:
@@ -416,25 +339,23 @@ def cmd_publish(args: argparse.Namespace) -> int:
         ui.info(f"No saved session at {options.state_path}. Run 'wqu login' first.")
         return 2
 
-    # Interactive prompting (assign decisions / duplicate handling) needs a
-    # plain terminal: keep the live bar off in that mode so prompts stay clean.
-    interactive_mode = _is_tty() and not args.yes and not any(
-        (args.assign, args.no_assign, args.keep_draft)
-    )
     ui.console.print("")
-    ui.info(f"Processing {len(files)} file(s){' (headless)' if options.headless else ' (headed)'}...")
-    use_bar = not args.quiet and not interactive_mode
-    if use_bar:
+    ui.console.print(f"[bold]Processing {len(files)} file(s)...[/bold]")
+    ui.console.print("")
+    if not args.quiet:
         ui.start(total=len(files))
     try:
+        # Prompts (assign / duplicate / archive) pause the Live region via
+        # _prompt_line / make_choose_archive, so the tree can stay on.
         results = publish_many(
             files,
             options,
             session=session,
             on_progress=None if args.quiet else ui.on_progress,
-            decide_assign=make_decide_assign(args),
-            resolve_duplicate=make_resolve_duplicate(args),
-            choose_archive=make_choose_archive(args),
+            decide_assign=make_decide_assign(args, ui),
+            resolve_duplicate=make_resolve_duplicate(args, ui),
+            choose_archive=make_choose_archive(args, ui),
+            on_result=None if args.quiet else ui.on_file_result,
         )
     except SessionExpiredError as exc:
         ui.info(str(exc))
@@ -444,7 +365,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
         return 2
     finally:
         ui.stop()
-    return finish_publish(args, results)
+    return finish_publish(args, results, ui)
 
 
 def _results_fancy_text(results: list[FileResult]) -> Text:
@@ -462,27 +383,33 @@ def _results_fancy_text(results: list[FileResult]) -> Text:
     return text
 
 
-def _summary_table(results: list[FileResult]) -> Table:
-    """Per-file batch summary for the terminal (stderr)."""
+def _summary_table(results: list[FileResult], ui: LiveTreeUI | None = None) -> Table:
+    """Per-file batch summary for the terminal (stderr), with timings."""
     table = Table(box=BOX_SIMPLE, pad_edge=False, show_edge=False)
     table.add_column("File", style="bold", overflow="fold", max_width=40)
     table.add_column("Status", no_wrap=True)
+    table.add_column("Time", justify="right", no_wrap=True)
     table.add_column("Join link / detail", overflow="fold")
-    for result in results:
+    times = list(ui.file_times) if ui is not None else []
+    for index, result in enumerate(results):
         name = Path(result.file).name
+        seconds = f"{times[index]:.1f}s" if index < len(times) else "-"
         if result.skipped:
-            table.add_row(name, "[yellow]SKIP[/yellow]", "[dim]skipped by user[/dim]")
+            table.add_row(name, "[yellow]SKIP[/yellow]", seconds, "[dim]skipped by user[/dim]")
         elif result.error is not None:
-            table.add_row(name, "[red]FAIL[/red]", f"[red]{escape(result.error)}[/red]")
+            table.add_row(name, "[red]FAIL[/red]", seconds, f"[red]{escape(result.error)}[/red]")
         elif result.join_link:
-            table.add_row(name, "[green]OK[/green]", f"[green]{escape(result.join_link)}[/green]")
+            table.add_row(name, "[green]OK[/green]", seconds,
+                          f"[green]{escape(result.join_link)}[/green]")
         else:
             detail = escape(str(result.quiz_url or "(no quiz created)"))
-            table.add_row(name, "[green]OK[/green]", f"{detail} [yellow](NO JOIN LINK)[/yellow]")
+            table.add_row(name, "[green]OK[/green]", seconds,
+                          f"{detail} [yellow](NO JOIN LINK)[/yellow]")
     return table
 
 
-def finish_publish(args: argparse.Namespace, results: list[FileResult]) -> int:
+def finish_publish(args: argparse.Namespace, results: list[FileResult],
+                   ui: LiveTreeUI | None = None) -> int:
     any_error = any(r.error is not None for r in results)
     if args.json:
         print(format_json(results))
@@ -496,8 +423,8 @@ def finish_publish(args: argparse.Namespace, results: list[FileResult]) -> int:
                 err(format_summary(results))
         else:
             console = err_console()
-            # human mode: clipboard copy FIRST, then a pretty panel (headed-run
-            # feedback 2026-11-09), then the summary table.
+            # human mode: clipboard copy FIRST, then a borderless result block,
+            # then the summary table with timings.
             if block:
                 if copy_to_clipboard(block):
                     console.print("[dim]Copied the result block to the clipboard.[/dim]")
@@ -505,18 +432,21 @@ def finish_publish(args: argparse.Namespace, results: list[FileResult]) -> int:
                     console.print("[yellow]WARNING: could not copy to the clipboard.[/yellow]")
             content = _results_fancy_text(results)
             if content.plain:
-                out = Console(file=sys.stdout, soft_wrap=True, legacy_windows=False)
-                out.print("")  # spacing before the box
+                out = out_console()
+                out.print("")  # spacing before the block
                 out.print(
                     Panel(
                         content,
                         title="wqu results",
+                        # HORIZONTALS: no side borders — double-click selection
+                        # in PowerShell/Windows Terminal no longer grabs "│".
+                        box=box.HORIZONTALS,
                         border_style="red" if any_error else "green",
                         expand=False,
                     )
                 )
             console.print("")  # spacing before the summary
-            console.print(_summary_table(results))
+            console.print(_summary_table(results, ui))
             caption = format_summary(results).splitlines()[0]
             console.print(f"[dim]{escape(caption)}[/dim]")
     if any(r.error_kind == "session-expired" for r in results):
@@ -532,7 +462,7 @@ def finish_publish(args: argparse.Namespace, results: list[FileResult]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _styled_progress(console: Console):
+def _styled_progress(console):
     def report(message: str) -> None:
         console.print(f"[{_classify(message)}]{escape(message)}[/]")
 

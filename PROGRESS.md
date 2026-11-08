@@ -62,6 +62,17 @@ first unticked item. Do not restart from scratch.
   * accommodations glitch can strike right after quiz-page Assign as well as at Select-a-class; recovered
     via chevron-left back arrow; modals STACK (previous modal stays mounted — never wait for it to hide)
   * "Got it" coachmark intercepts clicks and must be dismissed
+- 2026-11-09 (v0.1.3): Live step-tree UI (`wqu/ui.py`):
+  * `LiveTreeUI` renders a continuously-updated rich.live.Live region on stderr: overall files bar +
+    per-file panel `[i/n] name` with a step catalog (~33 expected steps) matched against on_progress
+    messages; ✓ green done, ⠸ cyan active (animated, perf_counter timer), – skipped, - pending,
+    ✗ red failed step with the error line inline; tree resets per file.
+  * Prompts ([r]esume/assign/archive) now pause()/resume() the Live region (fixes the mangled
+    prompt from the v0.1.2 screenshot); interactive mode keeps the tree instead of disabling it.
+  * Result panel switched to box=HORIZONTALS (double-click selection no longer grabs │ characters);
+    summary table gained a Time column; non-TTY runs fall back to plain styled lines (still timed).
+  * publish_many gained an `on_result` callback (per-file completion signal; GUI-friendly);
+    create_quiz emits "Navigating to the assessment page...". Tests: 93 passing.
 - 2026-11-09 (v0.1.2): UX/speed/library upgrades:
   * CLI redesign: blue rich banner with version; live progress line (spinner + bar + [i/n] + current step)
     with per-step colours (cyan/green/yellow/red) and spacing between files; rich summary table
