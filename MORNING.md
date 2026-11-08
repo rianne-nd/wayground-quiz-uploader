@@ -16,14 +16,14 @@ Delete them in the Wayground UI when convenient:
 | `DataComs_Quiz2_Pt2` | https://wayground.com/activity/admin/quiz/6aef9a4ed116dfce6d4986c8 | https://wayground.com/join?gc=35896595&source=liveDashboard |
 | `DataComs_Mod14` (public, 1-day) | https://wayground.com/activity/admin/quiz/6af01babaf64e5b6c4061644 | https://wayground.com/join?gc=57828115&source=liveDashboard |
 
-> **Update 2026-11-09 (v0.1.1):** implemented and live-verified five fixes from your
+> **Update 2026-11-08 (v0.1.1):** implemented and live-verified five fixes from your
 > headed run — "Great work!" dismissal order, fast "Got it" handling, the
 > public (no-class) assignment flow for `--no-assign`, native `clip.exe`
 > clipboard (verified with `Get-Clipboard`), and the rich Panel result box.
 > The `DataComs_Mod14` row above was created by that verification run. See
 > `PROGRESS.md` → Log for details.
 >
-> **Update 2026-11-09 (v0.1.3):** live step-tree UI (✓/⠸/–/-/✗ per step with
+> **Update 2026-11-08 (v0.1.3):** live step-tree UI (✓/⠸/–/-/✗ per step with
 > per-step timings, overall files bar, error line inside the tree), prompts
 > pause/resume the Live region (fixes the mangled `[r]esume` prompt),
 > result block switched to borderless `HORIZONTALS`, summary table gained a
@@ -31,7 +31,18 @@ Delete them in the Wayground UI when convenient:
 > `gc=24392467`; the `WQU_V013_TEST` quiz it created was archived through
 > the library module (counter back to ~10/20). 93 unit tests pass.
 >
-> **Update 2026-11-09 (v0.1.2):** CLI redesign (banner, live progress line,
+> **Update 2026-11-08 (v0.1.3 hotfix):** the first headed run exposed a Rich 14
+> integration crash in the live tree — `NotRenderableError` when the library
+> pre-check printed above the active live region (a bound method had been passed
+> as the renderable). Fixed with `Live(get_renderable=...)`; regression test
+> added. 94 unit tests pass.
+>
+> **Update 2026-11-08 (v0.1.3 UI follow-up):** completed file boxes now freeze
+> as full reports — all 33 steps with per-step timings — instead of collapsing
+> to "... (N earlier steps)". In-progress files keep the compact window; batch
+> runs leave one full panel per file. 96 unit tests pass.
+>
+> **Update 2026-11-08 (v0.1.2):** CLI redesign (banner, live progress line,
 > coloured steps, summary table), speed-ups (instant coachmark/glitch checks,
 > immediate public Assign), and the library manager (`wqu library`,
 > pre-flight 20-quiz cap check, interactive archiving,

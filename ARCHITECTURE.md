@@ -166,7 +166,7 @@ failure of the run) a Playwright trace `wqu-logs/<ts>.trace.zip` for
    (`[data-testid=quiz-subject-select-box]`) + Grade
    (`[data-testid=publish-modal-grade-input-select-box]`), picking options
    from the `UL[role=listbox] > LI[role=option]` panels.
-9. **Publish & Dismiss Success** (corrected after the 2026-11-09 headed run):
+9. **Publish & Dismiss Success** (corrected after the 2026-11-08 headed run):
    * Click the modal's "Publish" button.
    * **While still on the `/edit` page**, wait for the "Great work!" modal.
    * Click the `X` (`button[aria-label='xmark']`) to dismiss it.
@@ -202,7 +202,7 @@ failure of the run) a Playwright trace `wqu-logs/<ts>.trace.zip` for
      row shows "No deadline".
    * Click the final **Assign** (rightmost match — the breadcrumb "Assign"
      sits on the left).
-6. **Public Flow (Without Class)** (LIVE 2026-11-09: a quiz can be assigned
+6. **Public Flow (Without Class)** (LIVE 2026-11-08: a quiz can be assigned
    publicly, no class needed): skip "Select a class", skip the name modal and
    skip the deadline "Change". Click the final **Assign** directly — the
    platform defaults to a public assignment with a 1-day deadline. This still
@@ -264,6 +264,21 @@ for manual management.
   ticks via `perf_counter`), `–` dim = skipped branch step, `-` dim = still
   pending, `✗` red + an indented `ERROR:` line = failed step (the core
   aborts that file; the tree freezes until the next `[i/n]` resets it).
+  While a file is running the tree is windowed (`_KEEP_DONE` resolved steps +
+  active + `_KEEP_PENDING` pending). When `FileTree.finish()` runs, the panel
+  expands to the full catalog; `LiveTreeUI.on_file_result()` then stops the
+  Live region so that complete timing report stays in the terminal, and the
+  next `[i/n]` starts a fresh live region. Multi-file runs therefore leave one
+  full step/timing box per file.
+- **Rich wiring detail (v0.1.3 hotfix):** the live region is created as
+  `Live(get_renderable=ui._render, ...)`, not `Live(ui._render, ...)`. Rich's
+  positional argument expects a renderable; a bare callable is rendered as a
+  plain object, so any `console.print()` while the region is active (e.g. the
+  library pre-check before the first file) fails with
+  `NotRenderableError: Unable to render <bound method LiveTreeUI._render ...>`.
+  The callback form also re-evaluates spinner frames and timing cells on every
+  refresh. Regression:
+  `tests/test_ui.py::test_live_tree_ui_prints_preamble_while_live`.
 - **Prompts vs Live (`[r]esume / [s]kip / [n]ew`, assign, archive):**
   every interactive prompt goes through `ui.pause()` … `input()` …
   `ui.resume()` (see `cli._prompt_line` and `make_choose_archive`), so the

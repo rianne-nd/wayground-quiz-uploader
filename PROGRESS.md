@@ -62,7 +62,25 @@ first unticked item. Do not restart from scratch.
   * accommodations glitch can strike right after quiz-page Assign as well as at Select-a-class; recovered
     via chevron-left back arrow; modals STACK (previous modal stays mounted — never wait for it to hide)
   * "Got it" coachmark intercepts clicks and must be dismissed
-- 2026-11-09 (v0.1.3): Live step-tree UI (`wqu/ui.py`):
+- 2026-11-08 (v0.1.3 UI follow-up): Completed file boxes now freeze with the full step list.
+  While a file is running the tree stays windowed (last ~6 resolved + active + next few
+  pending); `FileTree.finish()` expands it to all 33 catalog slots, and
+  `LiveTreeUI.on_file_result()` stops the Live region so the panel persists, restarting it
+  at the next `[i/n]`. Multi-file runs therefore keep one complete timing panel per file
+  instead of collapsing to "... (N earlier steps)". Regression tests:
+  `test_finished_tree_renders_every_step_and_timing`,
+  `test_live_tree_ui_freezes_one_panel_per_file`; suite: 96 passed, 3 skipped,
+  ruff clean.
+- 2026-11-08 (v0.1.3 hotfix): Fixed the crash hit on the first headed run of the live tree UI.
+  `LiveTreeUI.start()` passed `self._render` (a bound method) as the renderable to
+  `rich.live.Live`; rich 14 renders the callable itself, so the library pre-check printed
+  while the live region was active raised
+  `rich.errors.NotRenderableError: Unable to render <bound method ...>` and aborted
+  `wqu publish` before the first file. The renderer is now registered via
+  `Live(get_renderable=self._render, ...)` (still refreshes spinner frames and timers).
+  Added regression test `test_live_tree_ui_prints_preamble_while_live`; suite:
+  94 passed, 3 skipped (integration), ruff clean.
+- 2026-11-08 (v0.1.3): Live step-tree UI (`wqu/ui.py`):
   * `LiveTreeUI` renders a continuously-updated rich.live.Live region on stderr: overall files bar +
     per-file panel `[i/n] name` with a step catalog (~33 expected steps) matched against on_progress
     messages; ✓ green done, ⠸ cyan active (animated, perf_counter timer), – skipped, - pending,
@@ -73,7 +91,7 @@ first unticked item. Do not restart from scratch.
     summary table gained a Time column; non-TTY runs fall back to plain styled lines (still timed).
   * publish_many gained an `on_result` callback (per-file completion signal; GUI-friendly);
     create_quiz emits "Navigating to the assessment page...". Tests: 93 passing.
-- 2026-11-09 (v0.1.2): UX/speed/library upgrades:
+- 2026-11-08 (v0.1.2): UX/speed/library upgrades:
   * CLI redesign: blue rich banner with version; live progress line (spinner + bar + [i/n] + current step)
     with per-step colours (cyan/green/yellow/red) and spacing between files; rich summary table
     (File/Status/Join link) + caption; clipboard copy still happens before the results panel;
@@ -87,7 +105,7 @@ first unticked item. Do not restart from scratch.
     bulk Archive + confirmation modal (`archive-activity-modal-primary-button`), rescan + limit gate.
   * Live-verified library flow: archived our own test quiz WQU_TEST_DELETE_ME → counter 11 → 10.
   * Tests: 79 passing; LICENSE/NOTICE/pyproject now copyright Edrianne John Puno; version 0.1.2.
-- 2026-11-09: Post-review fixes from the user's headed live run (all LIVE-verified in one final run):
+- 2026-11-08: Post-review fixes from the user's headed live run (all LIVE-verified in one final run):
   1. publish modal: dismiss the "Great work!" popup FIRST (still on /edit), then wait for the URL
      to drop /edit (20s, with direct navigation fallback).
   2. coachmark: on the quiz page, dismiss the "Got it" tip immediately (single 1.5s window), then Assign.

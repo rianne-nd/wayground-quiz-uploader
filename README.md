@@ -100,6 +100,11 @@ wqu publish "Quizzes\DataComs\_QuizizzOutput" --dry-run
    └────────────────────────────────────────────────────────────────┘
    ```
 
+   While a file is running the tree is windowed (recent steps plus a few
+   upcoming ones). When the file finishes, its panel freezes with **every**
+   step and timing so you can review the whole run; in a batch you get one
+   full panel per file.
+
 5. Clicks **Copy Join link** and prints a borderless result block (no `│`
    characters, so double-click selection copies cleanly) plus a summary
    table with per-file timings:
@@ -159,9 +164,9 @@ Output rules: everything status-like goes to **stderr**; the final
 clipboard in human mode only. Exit codes: `0` all good, `1` a file failed,
 `2` configuration/session problem (e.g. run `wqu login` again).
 
-Troubleshooting and recovery (expired sessions, red banners, where traces
-land): see [docs/troubleshooting.md](docs/troubleshooting.md). Selector
-inventory: [docs/selectors.md](docs/selectors.md).
+Troubleshooting and recovery (expired sessions, red banners, live-UI crashes,
+where traces land): see [docs/troubleshooting.md](docs/troubleshooting.md).
+Selector inventory: [docs/selectors.md](docs/selectors.md).
 
 ## Relationship to the Quiz Toolkit
 

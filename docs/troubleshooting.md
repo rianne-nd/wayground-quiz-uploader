@@ -63,6 +63,29 @@ browser context. The tool detects it and clicks the back arrow
 `wqu discover <the url from the log>` and check
 [docs/selectors.md](selectors.md) → the back-arrow selector may need updating.
 
+## `NotRenderableError` / `<bound method LiveTreeUI._render ...>`
+
+Symptom: `wqu publish` aborts before the first file with
+
+```text
+rich.errors.NotRenderableError: Unable to render <bound method LiveTreeUI._render ...>
+```
+
+Cause: the initial v0.1.3 build registered the live step tree's bound method as
+the `rich.live.Live` **renderable**. Rich expects a renderable object there, so
+printing any line while the live region was active — the library pre-check was
+the first one — made it try to render the method object.
+
+Fix: update the checkout and reinstall the package; the live region now uses
+Rich's `get_renderable` callback:
+
+```powershell
+git pull
+pip install -e .
+```
+
+Covered by `tests/test_ui.py::test_live_tree_ui_prints_preamble_while_live`.
+
 ## Something timed out mid-flow
 
 Every failure leaves:

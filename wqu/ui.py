@@ -303,7 +303,16 @@ class FileTree:
         )
 
     def _windowed_steps(self) -> list[tuple[Step, str]]:
-        """Chronological window: trimmed history + active + a few pending."""
+        """While running: trimmed history + active + a few pending.
+
+        Once the file result arrives, return every step so the final panel is
+        a complete, reviewable record with per-step timings.
+        """
+        if self.finished:
+            window = [(step, "├─") for step in self.steps]
+            if window:
+                window[-1] = (window[-1][0], "└─")
+            return window
         resolved: list[Step] = []
         pending: list[Step] = []
         seen_pending = False
@@ -413,7 +422,9 @@ class LiveTreeUI:
         if not self._interactive:
             return
         self._live = Live(
-            self._render,
+            # Pass the renderer as get_renderable, not as the renderable itself:
+            # rich renders a raw callable as a plain object (NotRenderableError).
+            get_renderable=self._render,
             console=self.console,
             refresh_per_second=10,
             vertical_overflow="visible",
@@ -472,8 +483,9 @@ class LiveTreeUI:
         if self._file_start is not None:
             self.file_times.append(time.perf_counter() - self._file_start)
             self._file_start = None
-        if self.tree is not None:
-            self.tree.finish(result.error)
+        tree = self.tree
+        if tree is not None:
+            tree.finish(result.error)
         if not self._interactive:
             status = "FAIL" if result.error else ("SKIP" if result.skipped else "OK")
             self.console.print(Text.assemble(
@@ -481,12 +493,22 @@ class LiveTreeUI:
                 (result.title, "bold"),
                 ("  " + (result.join_link or result.error or result.quiz_url or ""), "dim"),
             ))
+        elif tree is not None:
+            # Freeze the finished file as a persistent, fully expanded panel
+            # (every step + timing). The next [i/n] message restarts the live
+            # region via _begin_file(), so earlier files stay reviewable.
+            if self._live_active:
+                self.pause()  # Live.stop() renders the final expanded frame
+            else:
+                self.console.print(tree.render(self.console.width))
+            self.tree = None
         self._refresh()
 
     def _begin_file(self, index: int, total: int, name: str) -> None:
         self.tree = FileTree(index, total, name)
         self.tree.begin()
         self.files_total = total
+        self.resume()  # restart after the previous file's frozen panel
         self._file_start = time.perf_counter()
 
     def _refresh(self) -> None:

@@ -81,6 +81,27 @@ def test_render_smoke_contains_key_pieces() -> None:
     assert "Creating new quiz" in text
 
 
+def test_finished_tree_renders_every_step_and_timing() -> None:
+    tree = _tree()
+    # Resolve enough steps to trigger the running window's history trimming.
+    for step in tree.steps[1:20]:
+        step.state = "done"
+        step.started = step.ended = 0.0
+
+    running = err_console_render(tree.render(console_width=100))
+    assert "earlier steps" in running
+
+    tree.finish(None)
+    final = err_console_render(tree.render(console_width=100))
+    assert "earlier steps" not in final
+    assert "Validating workbook" in final
+    assert "No deadline confirmed" in final
+    assert "Join link captured" in final
+    assert "Done!" in final
+    assert final.count("├─") == len(tree.steps) - 1
+    assert "  └─ ✓ Done!" in final
+
+
 def err_console_render(renderable) -> str:  # noqa: ANN001
     from io import StringIO
 
@@ -128,6 +149,72 @@ def test_live_tree_ui_plain_mode_lines(capsys) -> None:  # noqa: ANN001
     assert "[1/1] sample.xlsx" in captured.err
     assert "OK" in captured.err and "sample_single" in captured.err
     assert len(ui.file_times) == 1
+
+
+def test_live_tree_ui_prints_preamble_while_live() -> None:
+    """Regression: rich 14 renders a callable renderable as-is.
+
+    ``Live(self._render)`` made ``console.print(...)`` fail with
+    NotRenderableError when a preamble message arrived after the live region
+    had started (e.g. the library pre-check in ``wqu publish``).
+    """
+    from io import StringIO
+
+    from rich.console import Console
+
+    from wqu.ui import LiveTreeUI
+
+    buffer = StringIO()
+    ui = LiveTreeUI()
+    ui.console = Console(file=buffer, force_terminal=True, width=100, legacy_windows=False)
+    ui._interactive = True
+    ui.start(1)
+    try:
+        ui.on_progress("Checking the library (free-tier cap)...")
+        ui.on_progress("[1/1] sample.xlsx")
+        ui.on_progress("Preview looks good.")
+    finally:
+        ui.stop()
+    assert "Checking the library" in buffer.getvalue()
+
+
+def test_live_tree_ui_freezes_one_panel_per_file() -> None:
+    from io import StringIO
+
+    from rich.console import Console
+
+    from wqu.ui import LiveTreeUI
+
+    class Result:
+        error = None
+        skipped = False
+        join_link = "https://wayground.com/join?gc=1"
+        quiz_url = None
+
+        def __init__(self, title: str) -> None:
+            self.title = title
+
+    buffer = StringIO()
+    ui = LiveTreeUI()
+    ui.console = Console(file=buffer, force_terminal=True, width=110, legacy_windows=False)
+    ui._interactive = True
+    ui.start(2)
+    try:
+        ui.on_progress("[1/2] file1.xlsx")
+        ui.on_progress("Preview looks good.")
+        ui.on_file_result(Result("file1"))
+        assert "[1/2] file1.xlsx" in buffer.getvalue()
+
+        ui.on_progress("[2/2] file2.xlsx")
+        ui.on_progress("Preview looks good.")
+        ui.on_file_result(Result("file2"))
+    finally:
+        ui.stop()
+
+    output = buffer.getvalue()
+    assert "[1/2] file1.xlsx" in output
+    assert "[2/2] file2.xlsx" in output
+    assert "earlier steps" not in output
 
 
 def test_prompt_line_pauses_and_resumes_live(monkeypatch) -> None:  # noqa: ANN001
