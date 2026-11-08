@@ -70,18 +70,29 @@ wqu publish "Quizzes\DataComs\_QuizizzOutput" --dry-run
    (a red "Invalid correct option" banner aborts that file and saves a
    screenshot; `--force-import` overrides).
 3. Fills the publish modal (Name / Subject / Grade) and publishes.
-4. Asks per file whether to assign (or use `--assign Naic` /
-   `--no-assign`), sets **No deadline**, names the assignment, unchecks
-   "Set up Accommodations", clicks **Assign**.
-5. Clicks **Copy Join link** and prints:
+4. Asks per file whether to assign. Two paths:
+   - **with a class** (`--assign Naic`, or answering `y`): tick the class,
+     force-uncheck "Set up Accommodations", name the assignment, set
+     **No deadline**, then click **Assign**;
+   - **public** (answering `N`, or `--no-assign`): skip straight to the final
+     **Assign** — the quiz is assigned publicly with the platform's default
+     1-day deadline.
+
+   (A quiz can be assigned publicly without a class — that is a supported
+   Wayground path, not a skip.)
+5. Clicks **Copy Join link** and prints a panelized result:
 
    ```text
-   QuizName: https://wayground.com/join?gc=24923411&source=liveDashboard
+   ┌──────────────────────────── wqu results ─────────────────────────────┐
+   │ QuizName: https://wayground.com/join?gc=24923411&source=liveDashboard │
+   └───────────────────────────────────────────────────────────────────────┘
    ```
 
    Split files (`*_pt1.xlsx`, `*_pt2.xlsx`, …) print `QuizName_Pt1:`, `_Pt2:`
-   in natural order. An unassigned quiz with no join link prints the quiz URL
-   plus `(NO JOIN LINK — published but not assigned)` — links are never
+   in natural order. The block is copied to the clipboard (native `clip.exe`)
+   *before* the panel is printed. `--keep-draft` (publish, assign nothing) is
+   the only mode that can yield no join link — then the quiz URL is printed
+   with `(NO JOIN LINK — published but not assigned)`. Links are never
    fabricated.
 
 ## Commands
@@ -102,13 +113,13 @@ wqu publish "Quizzes\DataComs\_QuizizzOutput" --dry-run
 | `--grade University` | `University` | grade in the publish modal |
 | `--title <name>` | derived from filename | quiz title (single file only); `Quizizz_` is stripped, `_pt<N>` → `_Pt<N>` |
 | `--assign <class>` | — | force-assign to this class (skips the prompt) |
-| `--no-assign` | — | never assign; suppresses the prompt |
-| `--no-deadline` / `--deadline` | no deadline | `--deadline` reserved for future use |
+| `--no-assign` | — | skip the class picker; still assigns **publicly** (1-day deadline) so a join link is produced; suppresses the prompt |
+| `--no-deadline` / `--deadline` | no deadline | `--deadline` reserved for future use (class flow only; the public flow always keeps the platform default) |
 | `--no-headless` | off (headless) | show the browser window |
 | `--dry-run` | off | validate only; no browser |
 | `--json` | off | machine-readable array: `file`, `title`, `quiz_url`, `join_link`, `assigned`, `error` |
 | `--quiet` | off | only the `Label: URL` lines on stdout |
-| `--keep-draft` | off | publish but skip assignment |
+| `--keep-draft` | off | publish and skip assignment **entirely** (no class, no public assignment; join link may be unavailable) |
 | `--force` | off | skip duplicate-title detection |
 | `--fail-fast` | off | stop on the first failed file (default: skip and continue) |
 | `--force-import` | off | DANGEROUS: import despite preview errors |

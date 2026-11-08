@@ -128,14 +128,41 @@ def natural_sort_key(item: str) -> tuple:
     return (tuple(key), 0, 0)
 
 
+def _run_clip_tool(cmd: list[str], text: str, *, as_text: bool) -> bool:
+    try:
+        if as_text:
+            subprocess.run(cmd, input=text, check=True, shell=False, text=True, timeout=10)
+        else:
+            subprocess.run(cmd, input=text.encode("utf-16-le"), check=True, shell=False, timeout=10)
+        return True
+    except Exception as exc:
+        log.debug("clipboard tool %r failed: %s", cmd, exc)
+        return False
+
+
 def copy_to_clipboard(text: str) -> bool:
     """Copy ``text`` to the system clipboard; returns success. Never prints.
 
-    Tries tkinter (unicode-safe on Windows), then platform tools. A GUI would
-    replace this with its own clipboard handling.
+    LIVE 2026-11-09: tkinter reported success but the text did not survive
+    process exit on Windows, so the native ``clip.exe`` is used first:
+    UTF-16LE bytes (unicode-safe, the classic clip.exe recipe) and then the
+    plain ``text=True`` form as a fallback. pbcopy/xclip cover the other
+    platforms; tkinter remains a last resort only.
     """
     if not text:
         return False
+    if sys.platform == "win32":
+        if _run_clip_tool(["clip"], text, as_text=False):
+            return True
+        if _run_clip_tool(["clip"], text, as_text=True):
+            return True
+    elif sys.platform == "darwin":
+        if _run_clip_tool(["pbcopy"], text, as_text=False):
+            return True
+    else:
+        for tool in (["xclip", "-selection", "clipboard"], ["xsel", "--clipboard"]):
+            if _run_clip_tool(tool, text, as_text=False):
+                return True
     try:
         import tkinter
 
@@ -148,19 +175,4 @@ def copy_to_clipboard(text: str) -> bool:
         return True
     except Exception as exc:
         log.debug("tkinter clipboard failed: %s", exc)
-    try:
-        if sys.platform == "win32":
-            subprocess.run("clip", input=text.encode("utf-16le"), check=True, shell=False)
-            return True
-        if sys.platform == "darwin":
-            subprocess.run("pbcopy", input=text.encode("utf-8"), check=True, shell=False)
-            return True
-        for tool in (["xclip", "-selection", "clipboard"], ["xsel", "--clipboard"]):
-            try:
-                subprocess.run(tool, input=text.encode("utf-8"), check=True, shell=False)
-                return True
-            except (FileNotFoundError, subprocess.CalledProcessError):
-                continue
-    except Exception as exc:
-        log.debug("clipboard tool failed: %s", exc)
     return False

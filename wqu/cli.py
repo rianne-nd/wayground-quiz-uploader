@@ -19,7 +19,9 @@ import sys
 from pathlib import Path
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from wqu import __version__
 from wqu.core import (
@@ -148,16 +150,20 @@ def make_decide_assign(args: argparse.Namespace):
     Returns a callable (FileView) -> class name | None. When it is None the
     pipeline never asks and never assigns.
     """
-    if args.keep_draft or args.no_assign:
-        return None
+    if args.keep_draft:
+        return None  # options.keep_draft skips assignment entirely
+    if args.no_assign:
+        # Public assignment (no class, platform defaults) — still yields a
+        # join link; see LIVE 2026-11-09 note in ARCHITECTURE.md.
+        return lambda view: None
     if args.assign:
         return lambda view: args.assign
     if args.yes:
-        err(f"--yes: defaulting to no assignment (use --assign {DEFAULT_CLASS} to assign).")
+        err(f"--yes: defaulting to a PUBLIC assignment, no class (use --assign {DEFAULT_CLASS} to assign to it).")
         return lambda view: None
     if not _is_tty():
-        err("stdin is not interactive; defaulting to no assignment "
-            f"(pass --assign {DEFAULT_CLASS} or --no-assign to silence this).")
+        err("stdin is not interactive; defaulting to a PUBLIC assignment, no class "
+            f"(pass --assign {DEFAULT_CLASS}, --keep-draft, or --no-assign to silence this).")
         return None
 
     def decide(view: FileView) -> str | None:
@@ -168,6 +174,7 @@ def make_decide_assign(args: argparse.Namespace):
         answer = _prompt_line(f'      Assign to class "{DEFAULT_CLASS}"? [y/N]:{note} ')
         if answer is not None and answer.strip().lower() in ("y", "yes"):
             return DEFAULT_CLASS
+        err("      → public assignment (no class; 1-day deadline)")
         return None
 
     return decide
@@ -262,23 +269,55 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return finish_publish(args, results)
 
 
+def _results_fancy_text(results: list[FileResult]) -> Text:
+    """One styled line per file: green success, red failure, dim skip."""
+    text = Text()
+    for index, result in enumerate(results):
+        if index:
+            text.append("\n")
+        if result.skipped:
+            text.append(f"{result.title}: (skipped)", style="dim")
+        elif result.error is None:
+            text.append(result.line(), style="green")
+        else:
+            text.append(f"{result.title}: {result.error}", style="red")
+    return text
+
+
 def finish_publish(args: argparse.Namespace, results: list[FileResult]) -> int:
     any_error = any(r.error is not None for r in results)
     if args.json:
         print(format_json(results))
     else:
         block = format_links(results)
-        if block:
-            print(block)
         if not args.quiet:
             err(format_summary(results))
         elif any_error:
             err(format_summary(results))  # --quiet still surfaces failures
-        if not args.quiet and block:
-            if copy_to_clipboard(block):
-                err("Copied the result block to the clipboard.")
-            else:
-                err("WARNING: could not copy to the clipboard.")
+        if args.quiet:
+            # script mode: plain lines only, no clipboard, no decoration
+            if block:
+                print(block)
+        else:
+            # human mode: clipboard copy FIRST, then a pretty panel (headed-run
+            # feedback 2026-11-09: PowerShell output was hard to read).
+            if block:
+                if copy_to_clipboard(block):
+                    err("Copied the result block to the clipboard.")
+                else:
+                    err("WARNING: could not copy to the clipboard.")
+            content = _results_fancy_text(results)
+            if content.plain:
+                out = Console(file=sys.stdout, soft_wrap=True)
+                out.print("")  # spacing before the box
+                out.print(
+                    Panel(
+                        content,
+                        title="wqu results",
+                        border_style="red" if any_error else "green",
+                        expand=False,
+                    )
+                )
     if any(r.error_kind == "session-expired" for r in results):
         err("Run 'wqu login' again.")
         return 2
@@ -412,7 +451,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_pub.add_argument("--assign", metavar="CLASS", default=None,
                        help="force-assign to this class name (no prompt)")
     p_pub.add_argument("--no-assign", action="store_true",
-                       help="never assign; also suppresses the interactive prompt")
+                       help="skip the class picker; still assigns PUBLICLY (platform default 1-day "
+                            "deadline) so a join link is produced; also suppresses the prompt")
     p_pub.add_argument("--no-deadline", dest="no_deadline", action="store_true", default=True,
                        help="set 'No deadline' on the assignment (default; accepted for symmetry)")
     p_pub.add_argument("--deadline", dest="no_deadline", action="store_false",
@@ -422,7 +462,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_pub.add_argument("--json", action="store_true", help="machine-readable output on stdout")
     p_pub.add_argument("--quiet", action="store_true", help="only the Label: URL lines (stdout)")
     p_pub.add_argument("--keep-draft", action="store_true",
-                       help="publish but skip assignment entirely")
+                       help="publish but skip assignment ENTIRELY (no class, no public assignment; "
+                            "a join link may be unavailable)")
     p_pub.add_argument("--force", action="store_true", help="skip duplicate-title detection")
     p_pub.add_argument("--fail-fast", action="store_true",
                        help="stop at the first failed file (default: skip and continue)")

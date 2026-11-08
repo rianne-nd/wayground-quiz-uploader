@@ -31,17 +31,19 @@ ProgFn = Callable[[str], None] | None
 
 _GAMEPLAY_URL_RE = re.compile(r"/gameplay/admin/activity/classic/(?P<activity_id>[\w-]+)")
 _HOMEWORK_URL_RE = re.compile(r"/activity/admin/quiz/homework/(?P<homework_id>[\w-]+)")
+_QUIZ_PAGE_RE = re.compile(r"/activity/admin/quiz/[\w-]+(?:[?#].*)?$")
 
 MAX_ASSIGNMENT_TITLE = 200  # not documented by Wayground; generous clip only
 
 
 @dataclass(frozen=True)
 class AssignResult:
-    class_name: str
+    class_name: str | None
     homework_id: str
     activity_id: str
     activity_url: str
     no_deadline: bool
+    public: bool = False  # True when assigned without a class (platform defaults)
 
 
 def _log(on_progress: ProgFn, message: str) -> None:
@@ -344,31 +346,66 @@ def _enter_homework_page(page: Page, on_progress: ProgFn) -> str:
 
 
 def _dismiss_coachmarks(page: Page, on_progress: ProgFn = None) -> None:
-    """'Got it' tip bubbles can intercept clicks (LIVE 2026-11-08)."""
-    for _ in range(3):
-        if not S.visible(page, S.GOT_IT_BUTTON, timeout_ms=800):
+    """'Got it' tip bubbles can intercept clicks.
+
+    LIVE 2026-11-09 (headed run): the tip renders shortly after the quiz page
+    loads, so give it one proper visibility window, dismiss it, confirm it is
+    gone, and get out of the way — no long polling.
+    """
+    for _ in range(2):
+        if not S.visible(page, S.GOT_IT_BUTTON, timeout_ms=1_500):
             return
-        _log(on_progress, "Dismissing a 'Got it' tip...")
+        _log(on_progress, "Dismissing the 'Got it' tip...")
         try:
-            S.click(page, S.GOT_IT_BUTTON, timeout_ms=2_000)
+            S.click(page, S.GOT_IT_BUTTON, timeout_ms=3_000)
         except SelectorNotFoundError:
             return
+        try:
+            page.get_by_role("button", name="Got it").first.wait_for(
+                state="hidden", timeout=2_000
+            )
+        except PlaywrightTimeoutError:
+            pass
 
 
 def assign_one(
     page: Page,
     *,
-    class_name: str,
+    class_name: str | None,
     assignment_title: str,
     no_deadline: bool = True,
     on_progress: ProgFn = None,
 ) -> AssignResult:
-    """Run the whole homework-assignment flow. Entry point: the quiz page."""
+    """Run the homework-assignment flow. Entry point: the quiz page.
+
+    ``class_name=None`` runs the PUBLIC flow (LIVE 2026-11-09 correction):
+    Wayground can assign a quiz publicly with no class and the platform's
+    default 1-day deadline. In that mode we skip "Select a class", the name
+    modal, and the deadline "Change" entirely and click the final Assign
+    straight away — which still produces a real join link.
+    """
     _log(on_progress, "Starting the assignment flow (Assign)...")
+    # Fix (headed-run feedback): be on the quiz page, dismiss the coachmark
+    # immediately, THEN click Assign.
+    if _QUIZ_PAGE_RE.search(page.url) is None:
+        try:
+            page.wait_for_url(_QUIZ_PAGE_RE, timeout=15_000)
+        except PlaywrightTimeoutError:
+            log.info("not on the quiz page yet (%s); proceeding anyway", page.url)
     recover_accommodations_page(page, on_progress)
+    _dismiss_coachmarks(page, on_progress)
     homework_id = _enter_homework_page(page, on_progress)
+    _dismiss_coachmarks(page, on_progress)
     S.resolve(page, S.ASSIGNMENT_DETAILS_MARKER, timeout_ms=30_000)
     recover_accommodations_page(page, on_progress)
+
+    if class_name is None:
+        _log(on_progress, "Public assignment (no class): skipping class, name and deadline steps...")
+        activity_id = _click_final_assign(page, on_progress)
+        _log(on_progress, "Assignment created; gameplay dashboard reached.")
+        return AssignResult(class_name=None, public=True, homework_id=homework_id,
+                            activity_id=activity_id, activity_url=page.url,
+                            no_deadline=False)
 
     _open_class_dialog(page, on_progress)
     dialog = S.find_dialog(page, S.CLASS_DIALOG_TITLE)
@@ -389,6 +426,6 @@ def assign_one(
         _set_no_deadline(page, on_progress)
     activity_id = _click_final_assign(page, on_progress)
     _log(on_progress, "Assignment created; gameplay dashboard reached.")
-    return AssignResult(class_name=class_name, homework_id=homework_id,
+    return AssignResult(class_name=class_name, public=False, homework_id=homework_id,
                         activity_id=activity_id, activity_url=page.url,
                         no_deadline=no_deadline)

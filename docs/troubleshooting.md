@@ -104,10 +104,22 @@ Use `--assign "<exact name>"`.
 
 ## "NO JOIN LINK — published but not assigned"
 
-Expected for `--no-assign` / `--keep-draft` / split quizzes where you chose
-Skip: the quiz page exposed no join URL, so the tool prints the quiz URL with
-the explicit marker and never fabricates a link. If you *assigned* and still
-see it, that file failed (see the summary on stderr + screenshot).
+This marker now appears only with `--keep-draft` (publish without assigning
+anything) — or when a link genuinely could not be captured, in which case that
+file is reported as a failure (exit 1) with a screenshot.
+
+`--no-assign` and answering `N` at the prompt do **not** produce it: a quiz can
+be assigned publicly without a class (platform default 1-day deadline), and
+that path still yields a real join link — the tool runs the final Assign and
+copies the link exactly like the class flow.
+
+## The public assignment has a 1-day deadline — I wanted no deadline
+
+Correct and by design: the deadline modal ("Change" → "No deadline") is part
+of the class flow. The public flow never touches time settings and keeps the
+platform default. If you need "No deadline" without students, use the class
+flow (`--assign Naic`) — the quiz stays visible to you and the class can be
+modified later in the UI.
 
 ## Cleaning up test quizzes
 

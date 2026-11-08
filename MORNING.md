@@ -14,6 +14,14 @@ Delete them in the Wayground UI when convenient:
 | `WQU_TEST_DELETE_ME` | https://wayground.com/activity/admin/quiz/6aef80c1b5860fbbdcffa5ff | https://wayground.com/join?gc=02211091&source=liveDashboard |
 | `DataComs_Quiz2_Pt1` | https://wayground.com/activity/admin/quiz/6aef963cb42346ba30d40013 | https://wayground.com/join?gc=47955219&source=liveDashboard |
 | `DataComs_Quiz2_Pt2` | https://wayground.com/activity/admin/quiz/6aef9a4ed116dfce6d4986c8 | https://wayground.com/join?gc=35896595&source=liveDashboard |
+| `DataComs_Mod14` (public, 1-day) | https://wayground.com/activity/admin/quiz/6af01babaf64e5b6c4061644 | https://wayground.com/join?gc=57828115&source=liveDashboard |
+
+> **Update 2026-11-09:** implemented and live-verified five fixes from your
+> headed run — "Great work!" dismissal order, fast "Got it" handling, the
+> public (no-class) assignment flow for `--no-assign`, native `clip.exe`
+> clipboard (verified with `Get-Clipboard`), and the rich Panel result box.
+> The `DataComs_Mod14` row above was created by that verification run. See
+> `PROGRESS.md` → Log for details.
 
 Deleting the quiz removes its assignment. `~/.wayground/created.json` is the
 same list (machine-readable). There are no other side effects.

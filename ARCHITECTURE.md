@@ -144,6 +144,77 @@ failure of the run) a Playwright trace `wqu-logs/<ts>.trace.zip` for
 | `./wqu-logs/` | logs, screenshots, traces |
 | `./snaps/` | `wqu discover` DOM/aria/screenshot dumps |
 
+## Detailed Playwright Flow & Functions
+
+### Phase 1: Create & Publish (`wqu/publish.py` -> `publish_one()`)
+
+1. **Navigate to Create:** `page.goto("https://wayground.com/activity/admin/assessment")`
+2. **Dismiss Premium Popup:** click the `X` (`button[aria-label='xmark']`) if the
+   "Unlock 45+ premium features" modal is visible.
+3. **Click Start:** `page.get_by_text("Start from scratch").click()`
+4. **Wait for Editor:** `page.wait_for_url("**/activity/admin/quiz/*/edit*")`
+5. **Import Spreadsheet:** scroll to "Import existing files" → click
+   "Spreadsheet" → `set_input_files()` on the modal's hidden input.
+   (A resumed draft that already has questions skips this step — re-importing
+   would duplicate them.)
+6. **Validate Import:** wait for "Looks good!" or "Invalid correct option".
+   If valid, click "Import"; if invalid, scrape the highlighted rows, cancel,
+   save a screenshot and skip the file (unless `--force-import`).
+7. **Open Publish Modal:** click `button[aria-label="Publish quiz"]`
+   (the accessible name overrides the visible "Publish" text).
+8. **Fill Metadata:** Name input (placeholder "Untitled Quiz") + Subject
+   (`[data-testid=quiz-subject-select-box]`) + Grade
+   (`[data-testid=publish-modal-grade-input-select-box]`), picking options
+   from the `UL[role=listbox] > LI[role=option]` panels.
+9. **Publish & Dismiss Success** (corrected after the 2026-11-09 headed run):
+   * Click the modal's "Publish" button.
+   * **While still on the `/edit` page**, wait for the "Great work!" modal.
+   * Click the `X` (`button[aria-label='xmark']`) to dismiss it.
+   * *Then* wait for the quiz page URL (drops `/edit`); if it does not come
+     within 20 s the tool navigates to
+     `https://wayground.com/activity/admin/quiz/{id}` directly.
+   * Known alternative: if the quiz was already published and nothing changed,
+     clicking Publish quiz skips the modal and navigates straight to the quiz
+     page — treated as success.
+
+### Phase 2: Assign (`wqu/assign.py` -> `assign_one()`)
+
+1. **Ensure quiz page, then dismiss coachmarks (corrected order):** wait for
+   `/activity/admin/quiz/*` → immediately check for and click the "Got it"
+   tip ("Sessions is now Reports") → *then* click "Assign".
+2. **Navigate to Assign:** click "Assign" on the quiz page.
+3. **Wait for Homework Page:** `page.wait_for_url("**/activity/admin/quiz/homework/*")`
+   (dismiss any coachmark again after landing).
+4. **Handle Accommodations Glitch:** if the full-page "Set up learning
+   supports" appears (after Assign *or* after "Select a class"), click the
+   back arrow (`chevron-left` → "Back" → Escape → go_back) and resume.
+5. **Standard Flow (With Class):**
+   * Click "Select a class" (`[data-testid=select-class-button]`) → check
+     "Naic" (click the row text) → force-uncheck "Set up Accommodations"
+     (it flips ON when the class is selected;
+     `[data-testid=assignment-setup-accommodations-toggle]`, JS-click fallback)
+     → Next.
+   * Fill the assignment Name → keep "Set up Accommodations" unchecked → Next.
+   * Click "Change" (`[data-testid=toggle-calendar-button]`) → toggle
+     "No deadline" ON (`input[role=switch][data-testid=date-time-selector-input]`,
+     state read before clicking) → "Save and close"
+     (`[data-testid=timeline-selector-continue-button]`) → verify the details
+     row shows "No deadline".
+   * Click the final **Assign** (rightmost match — the breadcrumb "Assign"
+     sits on the left).
+6. **Public Flow (Without Class)** (LIVE 2026-11-09: a quiz can be assigned
+   publicly, no class needed): skip "Select a class", skip the name modal and
+   skip the deadline "Change". Click the final **Assign** directly — the
+   platform defaults to a public assignment with a 1-day deadline. This still
+   produces a real join link.
+7. **Extract Link:** on the gameplay page
+   (`/gameplay/admin/activity/classic/*`), click "Copy Join link"; read the
+   link from the DOM first, then the clipboard (sentinel-poisoned), and only
+   accept a value matching the join-link regex.
+
+`--keep-draft` bypasses Phase 2 entirely (publish only); `--no-assign` takes
+the public flow so a join link is still produced.
+
 ## Output contract
 
 - stdout: the `Label: URL` block (or `--json` array, or the dry-run plan).

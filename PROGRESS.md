@@ -62,6 +62,18 @@ first unticked item. Do not restart from scratch.
   * accommodations glitch can strike right after quiz-page Assign as well as at Select-a-class; recovered
     via chevron-left back arrow; modals STACK (previous modal stays mounted — never wait for it to hide)
   * "Got it" coachmark intercepts clicks and must be dismissed
+- 2026-11-09: Post-review fixes from the user's headed live run (all LIVE-verified in one final run):
+  1. publish modal: dismiss the "Great work!" popup FIRST (still on /edit), then wait for the URL
+     to drop /edit (20s, with direct navigation fallback).
+  2. coachmark: on the quiz page, dismiss the "Got it" tip immediately (single 1.5s window), then Assign.
+  3. public assignment: `--no-assign` / answering N now runs the PUBLIC flow (no class, no deadline
+     change) straight to the final Assign — a real join link IS produced; `--keep-draft` remains the
+     only no-assignment mode.
+  4. clipboard: native `clip.exe` (UTF-16LE, then text=True) replaces tkinter-first; verified via
+     Get-Clipboard.
+  5. CLI: rich Panel around the result block (green/red), spacing, clipboard copied before printing.
+  Live result: DataComs_Mod14 (quiz 6af01babaf64e5b6c4061644) → public assignment →
+  https://wayground.com/join?gc=57828115&source=liveDashboard; exit 0. Tests: 70 passing.
 - 2026-11-08: LIVE end-to-end (headless) succeeded for a single file with --assign Naic:
   resume → skip import → publish-skip → glitch recovery → Naic → uncheck accommodations ×2 → name →
   No deadline ON → final Assign → gameplay → Copy Join link → clipboard → formatted stdout, exit 0.

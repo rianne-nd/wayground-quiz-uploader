@@ -473,9 +473,10 @@ def publish_quiz(
             "The quiz remains a draft; re-running this file resumes it."
         )
 
-    page.wait_for_url(_QUIZ_PAGE_RE, timeout=30_000)
+    # LIVE 2026-11-09 (headed run): the "Great work!" popup appears while the
+    # URL is STILL /edit — dismiss it first, then wait for the URL to drop
+    # /edit. Waiting for the URL first caused a visible stall.
     _log(on_progress, "Quiz published; closing the success modal...")
-    dismiss_premium_popup(page, on_progress)
     try:
         saved_dialog = S.find_dialog(page, S.SAVED_DIALOG_MARKER, timeout_ms=15_000)
         try:
@@ -485,6 +486,14 @@ def publish_quiz(
             page.keyboard.press("Escape")
     except SelectorNotFoundError:
         log.info("saved-success modal not found; continuing on the quiz page")
+
+    try:
+        page.wait_for_url(_QUIZ_PAGE_RE, timeout=20_000)
+    except PlaywrightTimeoutError:
+        # Deterministic fallback: the quiz page URL is always valid.
+        log.info("URL did not drop /edit after publish; navigating to the quiz page directly")
+        page.goto(QUIZ_URL.format(quiz_id=quiz_id), wait_until="domcontentloaded", timeout=45_000)
+        guard_session(page)
     return f"{WAYGROUND}/activity/admin/quiz/{quiz_id}"
 
 
@@ -609,6 +618,9 @@ def _process_one(
     record_created(options.state_path, title=data.title, quiz_id=quiz_id, quiz_url=quiz_url,
                    file=str(file), status="published")
 
+    # Assignment decision (LIVE 2026-11-09 correction): a quiz can be assigned
+    # PUBLICLY without a class — that is the standard "no class" path and it
+    # still yields a join link. Only --keep-draft skips assignment entirely.
     assign_class: str | None = None
     if not options.keep_draft:
         if options.assign_class:
@@ -618,10 +630,13 @@ def _process_one(
                             is_split=data.is_split, part=data.part)
             decision = decide_assign(view)
             assign_class = decision.strip() if isinstance(decision, str) and decision.strip() else None
-
-    if assign_class:
+        if assign_class:
+            _log(on_progress, f"Assigning to class {assign_class!r}...")
+        else:
+            _log(on_progress, "Assigning publicly (no class, platform default 1-day deadline)...")
         assign_one(page, class_name=assign_class, assignment_title=data.title,
-                   no_deadline=options.no_deadline, on_progress=on_progress)
+                   no_deadline=options.no_deadline and assign_class is not None,
+                   on_progress=on_progress)
         join_link = extract_join_link(page, on_progress=on_progress)
         record_created(options.state_path, title=data.title, quiz_id=quiz_id, quiz_url=quiz_url,
                        file=str(file), status="assigned", join_link=join_link)
@@ -635,13 +650,14 @@ def _process_one(
         return FileResult(file=str(file), title=data.title, quiz_url=quiz_url,
                           join_link=join_link, assigned=True)
 
-    # Published but deliberately not assigned: DOM scan only, never fabricate.
+    # --keep-draft: published but deliberately not assigned. DOM scan only,
+    # never fabricate a link.
     join_link = _scan_dom_for_join(page)
     if join_link:
         record_created(options.state_path, title=data.title, quiz_id=quiz_id, quiz_url=quiz_url,
                        file=str(file), status="published", join_link=join_link)
     else:
-        _log(on_progress, "Published without assignment; no join link exposed — "
+        _log(on_progress, "Published without assignment (--keep-draft); no join link exposed — "
                           "the output will carry the NO JOIN LINK marker.")
     return FileResult(file=str(file), title=data.title, quiz_url=quiz_url,
                       join_link=join_link, assigned=False)
