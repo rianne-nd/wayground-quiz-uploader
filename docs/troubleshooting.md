@@ -96,6 +96,20 @@ Interact until the screen in question is visible, press Ctrl+C, and inspect
 | wayground.com reachable | check your connection / VPN |
 | wqu-logs writable | pick another dir: `--logs-dir <path>` |
 
+## "library still full: 19/20 active and this batch needs N more slot(s)"
+
+Free Wayground accounts cap **active** quizzes at 20. The tool checks the
+counter before every batch:
+
+- Interactive runs show a table of your quizzes (with ages) and ask which to
+  archive — `1,4,7` / `o3` (oldest 3) / `a` (all) / Enter to skip.
+- `wqu publish … --auto-archive-oldest 5` archives the 5 oldest automatically.
+- `wqu library` opens the library headed so you can manage it by hand.
+
+If you skip the prompt, the run exits **2** instead of flooding the account
+past the cap. Archived quizzes are recoverable (Archived tab) and keep shared
+links working; they just can't be hosted or edited on the free plan.
+
 ## Class not found
 
 If the requested class (default interactive answer: `Naic`) is not in the

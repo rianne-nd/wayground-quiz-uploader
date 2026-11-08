@@ -192,6 +192,28 @@ def fill(root: Page | Locator, sel: Sel, value: str, *, timeout_ms: int = 10_000
     loc.fill(value)
 
 
+def first_visible(root: Page | Locator, sel: Sel) -> Locator | None:
+    """Instant, zero-wait lookup: first candidate element that is visible now.
+
+    Used on hot paths (coachmarks, incidental screens) where waiting even a
+    second for an element that is almost never present wastes real time.
+    Returns None when nothing matches — callers decide whether to wait.
+    """
+    for cand in sel.candidates:
+        try:
+            loc = _build(root, cand)
+            for i in range(min(loc.count(), 10)):
+                el = loc.nth(i)
+                try:
+                    if el.is_visible():
+                        return el
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return None
+
+
 def count_visible(page: Page, locator: Locator) -> int:
     n = 0
     for i in range(locator.count()):
@@ -790,6 +812,42 @@ ASSIGNMENT_DETAILS_MARKER = Sel(
 )
 
 # --- gameplay / join link ----------------------------------------------------
+LIBRARY_COUNTER = Sel(
+    "library_counter",
+    (
+        ("testid", "item-count-created-by-me-pill"),
+        ("regex", r"Created\s*\(\d+\s*/\s*\d+\)"),
+    ),
+    status="verified-live",
+    evidence='[data-testid=item-count-created-by-me-pill] reads "11 / 20" (probe 2026-11-09)',
+)
+LIBRARY_ARCHIVE_BUTTON = Sel(
+    "library_archive_button",
+    (
+        ("role", "button", "Archive"),
+        ("text", "Archive", True),
+    ),
+    status="verified-live",
+    evidence='bulk bar button aria "Archive" appears after selecting rows (probe 2026-11-09)',
+)
+LIBRARY_SELECTION_TEXT = Sel(
+    "library_selection_text",
+    (
+        ("regex", r"\d+\s+activities?\s+selected"),
+    ),
+    status="verified-live",
+    evidence='"1 activity selected" text in the bulk bar (probe 2026-11-09)',
+)
+LIBRARY_CONFIRM_ARCHIVE = Sel(
+    "library_confirm_archive",
+    (
+        ("testid", "archive-activity-modal-primary-button"),
+        ("role", "button", "re:^archive(\\s*\\(\\d+\\))?$"),
+    ),
+    status="verified-live",
+    evidence='confirmation modal "2 things to consider before you archive" → "Archive (1)" '
+    '(probe 2026-11-09; archiving verified: counter 11 → 10)',
+)
 GOT_IT_BUTTON = Sel(
     "got_it_button",
     (

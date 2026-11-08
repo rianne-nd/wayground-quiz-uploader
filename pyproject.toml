@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wqu"
-version = "0.1.0"
+version = "0.1.2"
 description = "Upload .xlsx quizzes produced by the Quiz Toolkit to Wayground (formerly Quizizz): publish, optionally assign, and return join links."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Kath Puno" }]
+authors = [{ name = "Edrianne John Puno" }]
 keywords = ["quizizz", "wayground", "playwright", "automation", "edtech", "python-cli"]
 classifiers = [
     "Development Status :: 4 - Beta",

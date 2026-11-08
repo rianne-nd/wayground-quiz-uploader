@@ -119,7 +119,9 @@ def test_finish_publish_panel_and_clipboard_first(capsys, monkeypatch: pytest.Mo
     assert copied["text"] == f"A: {LINK}"          # clipboard got the block
     assert "wqu results" in captured.out           # the panel is on stdout
     assert f"A: {LINK}" in captured.out
-    assert captured.err.startswith("Processed 1 files: 1 success, 0 failure")
+    assert "Copied the result block to the clipboard." in captured.err
+    assert "Processed 1 files: 1 success, 0 failure" in captured.err
+    assert "OK" in captured.err                    # summary table row on stderr
 
 
 def test_finish_publish_failure_counts_exit_one(capsys, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -131,6 +133,7 @@ def test_finish_publish_failure_counts_exit_one(capsys, monkeypatch: pytest.Monk
     captured = capsys.readouterr()
     assert rc == 1
     assert "boom" in captured.out                  # red failure line inside the panel
+    assert "boom" in captured.err                  # and in the summary table
     assert "Processed 1 files: 0 success, 1 failure" in captured.err
 
 

@@ -215,6 +215,51 @@ failure of the run) a Playwright trace `wqu-logs/<ts>.trace.zip` for
 `--keep-draft` bypasses Phase 2 entirely (publish only); `--no-assign` takes
 the public flow so a join link is still produced.
 
+### Library Manager (`wqu/library.py`)
+
+Wayground free accounts cap *active* quizzes at 20 ("11 / 20 activities
+created"). If active quizzes + new quizzes > 20:
+
+1. Navigate to `https://wayground.com/my-library/admin/my-library/createdByMe`
+2. Wait for the table/counter to load
+   (`[data-testid=item-count-created-by-me-pill]` → "11 / 20").
+3. Scrape all rows: `[data-testid=ui-table-row-{quiz_id}]` gives Title
+   (`activity-card-title`), Age (relative text) and the Checkbox element
+   (`ui-table-row-checkbox-{quiz_id}`, toggled via JS click — it is styled-covered).
+4. If `--auto-archive-oldest N` is set, tick the N rows with the largest
+   parsed age (`parse_age_minutes`; unknowns fall back to tail order).
+5. Otherwise, the CLI prints a `rich.table` and uses `rich.prompt` to ask
+   which to archive (`select_for_archive` parses `#,#`, `o<N>`, `a`, Enter).
+6. Click the bulk bar's **Archive** button (`aria-label="Archive"`, which
+   appears with "N activity selected"); accept a confirmation dialog if one
+   appears; wait for the rows to detach.
+7. Rescan; if the cap would still be exceeded, raise `LibraryLimitError`
+   (exit 2) with guidance instead of flooding the account.
+
+The pre-flight runs at the top of `publish_many()` on the same browser
+session; any *read* failure is logged and skipped (never blocks a run), while
+a real cap problem aborts cleanly. `wqu library` opens the same page headed
+for manual management.
+
+## Terminal UX & speed (v0.1.2)
+
+- **Banner:** every command starts with a blue rich Panel showing the version.
+- **Live progress:** `publish` renders one live line on **stderr** —
+  spinner + bar + `[i/n] files` + the current step — via `ProgressUI`.
+  stdout stays reserved for the result block/JSON. Interactive prompting
+  mode deliberately falls back to plain styled lines so prompts stay clean.
+- **Colour rules:** cyan = info, green = success, yellow = warning,
+  red = error (`ProgressUI._classify`).
+- **Summary table:** after a batch, a `rich.table` lists File / Status /
+  Join link (errors inline), followed by the `Processed …` caption.
+- **Clipboard before panel:** the human result block is copied first, then
+  the boxed panel is printed (then the summary table) with spacing.
+- **Speed**: coachmark ("Got it") checks are instant `is_visible()` probes
+  with a single 400 ms grace right after page load; the accommodations page
+  is probed instantly and recovered with bounded ~1.2 s re-checks instead of
+  a 10 s hidden-wait; the public assignment path clicks the final Assign
+  immediately (no class modal waits).
+
 ## Output contract
 
 - stdout: the `Label: URL` block (or `--json` array, or the dry-run plan).

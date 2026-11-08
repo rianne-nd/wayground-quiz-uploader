@@ -52,36 +52,49 @@ def _log(on_progress: ProgFn, message: str) -> None:
         on_progress(message)
 
 
-def recover_accommodations_page(page: Page, on_progress: ProgFn = None) -> bool:
+def _accommodations_visible(page: Page, *, wait_ms: int = 0) -> bool:
+    """Instant check (with an optional short grace) for the glitch page."""
+    if S.first_visible(page, S.ACCOMMODATIONS_PAGE_MARKER) is not None:
+        return True
+    if wait_ms > 0:
+        return S.visible(page, S.ACCOMMODATIONS_PAGE_MARKER, timeout_ms=wait_ms)
+    return False
+
+
+def recover_accommodations_page(page: Page, on_progress: ProgFn = None, *, wait_ms: int = 350) -> bool:
     """The known glitch (guide rule 2): full-page 'Set up learning supports'.
 
-    When detected, click the back-arrow in the top-left to return. Returns
-    True when a recovery click was performed.
+    Speed-up (live feedback 2026-11-09): the old code spent ~1.2 s per check
+    plus a 10 s hidden-wait; now it is an instant visibility probe (with a
+    short grace for just-triggered redirects) and a bounded ~1.2 s re-check
+    after the back click. Returns True when a recovery click was performed.
     """
-    if not S.visible(page, S.ACCOMMODATIONS_PAGE_MARKER, timeout_ms=1_200):
+    if not _accommodations_visible(page, wait_ms=wait_ms):
         return False
     _log(on_progress, "Detected the accommodations page; clicking the back arrow...")
     for attempt in range(3):
-        try:
-            S.click(page, S.ACCOMMODATIONS_BACK_BUTTON, timeout_ms=5_000)
-            break
-        except SelectorNotFoundError:
-            if attempt == 0:
+        back = S.first_visible(page, S.ACCOMMODATIONS_BACK_BUTTON)
+        if back is not None:
+            try:
+                back.click(timeout=2_500)
+            except Exception:
                 try:
-                    page.keyboard.press("Escape")
+                    back.evaluate("el => el.click()")
                 except Exception:
                     pass
-            elif attempt == 1:
-                try:
-                    page.go_back()
-                except Exception:
-                    pass
-    try:
-        page.get_by_text("Set up learning supports", exact=False).first.wait_for(
-            state="hidden", timeout=10_000
-        )
-    except PlaywrightTimeoutError:
-        log.warning("accommodations page still visible after recovery attempts")
+        elif attempt == 0:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+        elif attempt == 1:
+            try:
+                page.go_back()
+            except Exception:
+                pass
+        if not _accommodations_visible(page, wait_ms=1_200):
+            return True
+    log.warning("accommodations page still visible after recovery attempts")
     return True
 
 
@@ -93,11 +106,11 @@ def _open_class_dialog(page: Page, on_progress: ProgFn = None) -> None:
     returns to the assignment flow, then the modal opens.
     """
     clicked = False
-    if S.visible(page, S.SELECT_A_CLASS_BUTTON, timeout_ms=3_000):
+    if S.visible(page, S.SELECT_A_CLASS_BUTTON, timeout_ms=2_000):
         _log(on_progress, "Opening the class picker...")
         S.click(page, S.SELECT_A_CLASS_BUTTON, timeout_ms=10_000)
         clicked = True
-    elif S.visible(page, S.MODIFY_CLASS_BUTTON, timeout_ms=3_000):
+    elif S.visible(page, S.MODIFY_CLASS_BUTTON, timeout_ms=2_000):
         _log(on_progress, "A class is already attached; opening Modify...")
         S.click(page, S.MODIFY_CLASS_BUTTON, timeout_ms=10_000)
         clicked = True
@@ -130,11 +143,11 @@ def _open_class_dialog(page: Page, on_progress: ProgFn = None) -> None:
 
 
 def _wait_class_dialog_or_glitch(page: Page, *, timeout_ms: int) -> str:
-    """Return 'dialog', 'glitch', or 'timeout'."""
+    """Return 'dialog', 'glitch', or 'timeout' (glitch check is instant)."""
     waited = 0
-    step = 500
+    step = 400
     while waited < timeout_ms:
-        if S.visible(page, S.ACCOMMODATIONS_PAGE_MARKER, timeout_ms=step):
+        if S.first_visible(page, S.ACCOMMODATIONS_PAGE_MARKER) is not None:
             return "glitch"
         if S.visible(page, S.CLASS_DIALOG_TITLE, timeout_ms=step):
             return "dialog"
@@ -310,12 +323,13 @@ def _click_final_assign(page: Page, on_progress: ProgFn) -> str:
 def _wait_homework_or_glitch(page: Page, *, timeout_ms: int) -> str:
     """Race: homework URL reached | accommodations page shown | timeout."""
     waited = 0
-    step = 500
+    step = 400
     while waited < timeout_ms:
         if _HOMEWORK_URL_RE.search(page.url):
             return "homework"
-        if S.visible(page, S.ACCOMMODATIONS_PAGE_MARKER, timeout_ms=step):
+        if S.first_visible(page, S.ACCOMMODATIONS_PAGE_MARKER) is not None:
             return "glitch"
+        page.wait_for_timeout(step)
         waited += step
     return "timeout"
 
@@ -345,27 +359,34 @@ def _enter_homework_page(page: Page, on_progress: ProgFn) -> str:
     raise AssignError(f"could not reach the Assignment Details page (now at {page.url})")
 
 
-def _dismiss_coachmarks(page: Page, on_progress: ProgFn = None) -> None:
+def _dismiss_coachmarks(page: Page, on_progress: ProgFn = None, *, grace_ms: int = 0) -> None:
     """'Got it' tip bubbles can intercept clicks.
 
-    LIVE 2026-11-09 (headed run): the tip renders shortly after the quiz page
-    loads, so give it one proper visibility window, dismiss it, confirm it is
-    gone, and get out of the way — no long polling.
+    Speed-up (live feedback 2026-11-09): check visibility INSTANTLY
+    (``first_visible`` does no waiting). ``grace_ms`` adds a single short
+    pause for the moment right after the quiz page loads, when the tip may
+    still be rendering — pass 0 everywhere else.
     """
-    for _ in range(2):
-        if not S.visible(page, S.GOT_IT_BUTTON, timeout_ms=1_500):
-            return
-        _log(on_progress, "Dismissing the 'Got it' tip...")
+    tip = S.first_visible(page, S.GOT_IT_BUTTON)
+    if tip is None and grace_ms > 0:
+        page.wait_for_timeout(grace_ms)
+        tip = S.first_visible(page, S.GOT_IT_BUTTON)
+    if tip is None:
+        return
+    _log(on_progress, "Dismissing the 'Got it' tip...")
+    try:
+        tip.click(timeout=2_500)
+    except Exception:
         try:
-            S.click(page, S.GOT_IT_BUTTON, timeout_ms=3_000)
-        except SelectorNotFoundError:
+            tip.evaluate("el => el.click()")
+        except Exception:
             return
-        try:
-            page.get_by_role("button", name="Got it").first.wait_for(
-                state="hidden", timeout=2_000
-            )
-        except PlaywrightTimeoutError:
-            pass
+    try:
+        page.get_by_role("button", name="Got it").first.wait_for(
+            state="hidden", timeout=1_500
+        )
+    except PlaywrightTimeoutError:
+        pass
 
 
 def assign_one(
@@ -392,8 +413,8 @@ def assign_one(
             page.wait_for_url(_QUIZ_PAGE_RE, timeout=15_000)
         except PlaywrightTimeoutError:
             log.info("not on the quiz page yet (%s); proceeding anyway", page.url)
-    recover_accommodations_page(page, on_progress)
-    _dismiss_coachmarks(page, on_progress)
+    recover_accommodations_page(page)
+    _dismiss_coachmarks(page, on_progress, grace_ms=400)  # just landed: allow the tip to render
     homework_id = _enter_homework_page(page, on_progress)
     _dismiss_coachmarks(page, on_progress)
     S.resolve(page, S.ASSIGNMENT_DETAILS_MARKER, timeout_ms=30_000)

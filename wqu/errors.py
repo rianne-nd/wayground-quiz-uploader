@@ -71,3 +71,11 @@ class ClassNotFoundError(AssignError):
 
 class JoinLinkError(WquError):
     """No join link could be extracted (never fabricate one)."""
+
+
+class LibraryError(WquError):
+    """Library page interaction failed (scan/select/archive)."""
+
+
+class LibraryLimitError(LibraryError):
+    """The account's active-quiz cap would be exceeded and nothing was archived."""

@@ -63,6 +63,11 @@ wqu publish "Quizzes\DataComs\_QuizizzOutput" --dry-run
 
 ## What a run does, step by step
 
+0. **Pre-flight (free-tier cap):** checks your library counter
+   (`X / 20` active quizzes). If this batch would exceed 20, it shows the
+   quiz list with ages and lets you archive old ones (or use
+   `--auto-archive-oldest N` for a hands-off run). Nothing is archived
+   without your explicit choice.
 1. Validates every workbook locally (sheet `Create a Quiz`, 11 columns,
    1-based `Correct Answer` indices).
 2. Creates the quiz ("Start from scratch"), opens the spreadsheet import,
@@ -103,6 +108,7 @@ wqu publish "Quizzes\DataComs\_QuizizzOutput" --dry-run
 | `wqu check` | Reloads the session and probes a protected page: `[OK]` or `[EXPIRED]`. |
 | `wqu doctor` | Environment diagnostics: Python, Playwright + Chromium, session age, network, logs dir, openpyxl. |
 | `wqu discover <url>` | Opens the URL headed; on Ctrl+C saves HTML/aria/screenshot to `./snaps/` — the canonical way to re-verify selectors. |
+| `wqu library` | Opens your Wayground library headed so you can archive/manage quizzes (free accounts cap active quizzes at 20). |
 | `wqu publish <path>...` | Files and/or folders; the full pipeline. |
 
 ### `wqu publish` flags
@@ -126,6 +132,7 @@ wqu publish "Quizzes\DataComs\_QuizizzOutput" --dry-run
 | `--interactive-review` | off | pause after each publish, show the URL, Enter before assigning |
 | `--yes` | off | non-interactive defaults for all prompts |
 | `--from-toolkit-root <path>` | — | auto-discover `Quizzes\*\_QuizizzOutput\*.xlsx` under this root |
+| `--auto-archive-oldest <N>` | — | when the 20-quiz library cap would be exceeded, archive the N oldest quizzes automatically (no prompt) |
 
 Output rules: everything status-like goes to **stderr**; the final
 `Label: URL` block (or `--json`) goes to **stdout** and is copied to your

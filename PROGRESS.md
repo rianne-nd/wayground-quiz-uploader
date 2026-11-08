@@ -62,6 +62,20 @@ first unticked item. Do not restart from scratch.
   * accommodations glitch can strike right after quiz-page Assign as well as at Select-a-class; recovered
     via chevron-left back arrow; modals STACK (previous modal stays mounted — never wait for it to hide)
   * "Got it" coachmark intercepts clicks and must be dismissed
+- 2026-11-09 (v0.1.2): UX/speed/library upgrades:
+  * CLI redesign: blue rich banner with version; live progress line (spinner + bar + [i/n] + current step)
+    with per-step colours (cyan/green/yellow/red) and spacing between files; rich summary table
+    (File/Status/Join link) + caption; clipboard copy still happens before the results panel;
+    all presentations go to stderr, stdout stays the result block/JSON.
+  * Speed: coachmark checks are instant `is_visible()` probes (single 400ms grace on landing);
+    accommodations-page probing is instant with bounded ~1.2s re-checks (no 10s hidden-wait);
+    public assignment goes straight to the final Assign.
+  * Library manager (`wqu/library.py` + `wqu library` command): pre-flight cap check on
+    `my-library/createdByMe` ("X / 20" counter), row scraping (title/age/checkbox), interactive
+    archive chooser (rich table + prompts; `#,#` | `o<N>` | `a` | Enter), `--auto-archive-oldest N`,
+    bulk Archive + confirmation modal (`archive-activity-modal-primary-button`), rescan + limit gate.
+  * Live-verified library flow: archived our own test quiz WQU_TEST_DELETE_ME → counter 11 → 10.
+  * Tests: 79 passing; LICENSE/NOTICE/pyproject now copyright Edrianne John Puno; version 0.1.2.
 - 2026-11-09: Post-review fixes from the user's headed live run (all LIVE-verified in one final run):
   1. publish modal: dismiss the "Great work!" popup FIRST (still on /edit), then wait for the URL
      to drop /edit (20s, with direct navigation fallback).

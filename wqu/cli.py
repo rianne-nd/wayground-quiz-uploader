@@ -15,11 +15,16 @@ Exit codes: 0 all good; 1 at least one file failed; 2 config/session problem.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
+from rich.box import SIMPLE as BOX_SIMPLE
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
+from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
 
@@ -40,6 +45,7 @@ from wqu.core import (
     load_xlsx,
     natural_sort_key,
 )
+from wqu.errors import LibraryLimitError
 from wqu.logging_setup import setup_logging
 from wqu.publish import publish_many
 from wqu.store import default_state_path
@@ -53,6 +59,116 @@ def err(message: str = "") -> None:
 
 def progress(message: str) -> None:
     err(message)
+
+
+def err_console() -> Console:
+    """Fresh stderr console per call (so tests/capsys capture correctly).
+
+    legacy_windows=False forces the nice unicode box glyphs; main() already
+    reconfigures the streams to UTF-8 on Windows consoles.
+    """
+    return Console(file=sys.stderr, soft_wrap=True, highlight=False, legacy_windows=False)
+
+
+def print_banner(subtitle: str = "") -> None:
+    line = Text.assemble(
+        ("wqu ", "bold white"),
+        (f"v{__version__}", "bold cyan"),
+        ("  •  Wayground quiz uploader", "white"),
+    )
+    if subtitle:
+        line.append(f"  •  {subtitle}", style="dim")
+    console = err_console()
+    console.print(Panel(line, border_style="blue", padding=(0, 2)))
+    console.print("")
+
+
+_STYLE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(error|failed|failure|FAIL)\b", re.I), "red"),
+    (re.compile(r"\b(warning|skipped|skipping|could not|no join link|still)\b", re.I), "yellow"),
+    (
+        re.compile(
+            r"\b(published|looks good|ready|unchecked|captured|already|archived|"
+            r"room for|now at|is now ON|OK)\b",
+            re.I,
+        ),
+        "green",
+    ),
+)
+
+
+def _classify(message: str) -> str:
+    """Pick a colour for a progress message (cyan = neutral info)."""
+    for pattern, style in _STYLE_RULES:
+        if pattern.search(message):
+            return style
+    return "cyan"
+
+
+class ProgressUI:
+    """Banner + live progress/spinner UI for `wqu publish` (stderr only).
+
+    stdout stays reserved for the final result block / JSON; everything here
+    is presentation for humans. ``on_progress`` routes core callbacks into a
+    single live line: a bar with ``[i/n] files`` plus the current step.
+    """
+
+    _FILE_RE = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)$")
+
+    def __init__(self, subtitle: str = "publish") -> None:
+        self.console = err_console()
+        self.subtitle = subtitle
+        self.progress: Progress | None = None
+        self.task_id: TaskID | None = None
+
+    def banner(self) -> None:
+        print_banner(self.subtitle)
+
+    def info(self, message: str) -> None:
+        self.console.print(f"[{_classify(message)}]{escape(message)}[/]")
+
+    def start(self, total: int) -> None:
+        self.progress = Progress(
+            SpinnerColumn(style="cyan"),
+            BarColumn(bar_width=24, complete_style="cyan", finished_style="green"),
+            TextColumn("[bold]{task.completed}/{task.total} files[/bold]"),
+            TextColumn("{task.fields[step]}"),
+            console=self.console,
+        )
+        self.progress.start()
+        self.task_id = self.progress.add_task("publish", total=total,
+                                              step="[cyan]starting...[/cyan]")
+
+    def on_progress(self, message: str) -> None:
+        if self.progress is None or self.task_id is None:
+            self.info(message)
+            return
+        match = self._FILE_RE.match(message)
+        if match:
+            index = int(match.group(1))
+            if index > 1:
+                self.console.print("")  # spacing between files (major phases)
+            self.progress.update(
+                self.task_id,
+                total=int(match.group(2)),
+                completed=index - 1,
+                step=f"[bold cyan]{escape(match.group(3))}[/bold cyan]",
+            )
+        else:
+            style = _classify(message)
+            self.progress.update(self.task_id, step=f"[{style}]{escape(message)}[/{style}]")
+
+    def stop(self) -> None:
+        if self.progress is None or self.task_id is None:
+            return
+        task = self.progress.tasks[0]
+        done = task.completed >= (task.total or 0)
+        self.progress.update(
+            self.task_id,
+            step="[green]done[/green]" if done else "[yellow]stopped[/yellow]",
+        )
+        self.progress.stop()
+        self.progress = None
 
 
 def _is_tty() -> bool:
@@ -110,7 +226,7 @@ def collect_files(paths: list[str], toolkit_root: str | None) -> list[Path]:
 
 def run_dry_run(files: list[Path], options: PipelineOptions) -> int:
     """Validate every workbook; print a plan table to stdout. No browser."""
-    out = Console(file=sys.stdout, soft_wrap=True)  # resolved per call so tests can capture it
+    out = Console(file=sys.stdout, soft_wrap=True, legacy_windows=False)  # per call for capturability
     table = Table(title="wqu publish --dry-run", show_lines=False)
     table.add_column("File")
     table.add_column("Label / title")
@@ -211,6 +327,50 @@ def make_resolve_duplicate(args: argparse.Namespace):
     return decide_interactive
 
 
+def make_choose_archive(args: argparse.Namespace):
+    """Interactive library-cap chooser (rich table + prompts).
+
+    Returns None when --auto-archive-oldest (handled inside the pipeline) or
+    when not interactive: a non-TTY run must never hang on a prompt.
+    """
+    if args.auto_archive_oldest is not None:
+        return None
+    if args.quiet or not _is_tty():
+        return None
+
+    def choose(scan, needed: int):  # noqa: ANN001 - library.LibraryScan
+        from wqu.library import select_for_archive
+
+        console = err_console()
+        console.print("")
+        table = Table(
+            title=f"Library cap: {scan.total}/{scan.limit} active quizzes — "
+                  f"this batch needs {needed} more slot(s)",
+            box=BOX_SIMPLE,
+        )
+        table.add_column("#", justify="right")
+        table.add_column("Title", overflow="fold")
+        table.add_column("Age", style="dim")
+        for item in scan.items[:30]:
+            table.add_row(str(item.row_index), escape(item.title), escape(item.age_text or "?"))
+        if len(scan.items) > 30:
+            table.add_row("…", f"[dim]+{len(scan.items) - 30} more[/dim]", "")
+        console.print(table)
+        spec = Prompt.ask(
+            "Archive which? [#,# | o<N>=oldest N | a=all | Enter=skip]",
+            console=console, default="",
+        )
+        picks = select_for_archive(spec, scan, needed)
+        if not picks:
+            console.print("[yellow]Nothing selected; the run stops if the cap would be exceeded.[/yellow]")
+            return ()
+        if Confirm.ask(f"Archive {len(picks)} quiz(zes)?", console=console, default=False):
+            return picks
+        return ()
+
+    return choose
+
+
 def build_options(args: argparse.Namespace, logs_dir: Path) -> PipelineOptions:
     return PipelineOptions(
         subject=args.subject,
@@ -223,6 +383,7 @@ def build_options(args: argparse.Namespace, logs_dir: Path) -> PipelineOptions:
         force_import=args.force_import,
         fail_fast=args.fail_fast,
         headless=not args.no_headless,
+        auto_archive_oldest=getattr(args, "auto_archive_oldest", None),
         state_path=default_state_path(),
         logs_dir=logs_dir,
     )
@@ -230,17 +391,19 @@ def build_options(args: argparse.Namespace, logs_dir: Path) -> PipelineOptions:
 
 def cmd_publish(args: argparse.Namespace) -> int:
     log_path = setup_logging("publish", args.logs_dir)
-    err(f"Log: {log_path}")
+    ui = ProgressUI()
+    ui.banner()
+    ui.console.print(f"[dim]Log: {log_path}[/dim]")
     try:
         files = collect_files(args.paths or [], args.from_toolkit_root)
     except WquError as exc:
-        err(str(exc))
+        ui.info(str(exc))
         return 2
     if not files:
-        err("no .xlsx files found to process.")
+        ui.info("no .xlsx files found to process.")
         return 2
     if args.title and len(files) > 1:
-        err("--title can only be used with exactly one input file.")
+        ui.info("--title can only be used with exactly one input file.")
         return 2
 
     options = build_options(args, Path(args.logs_dir))
@@ -250,22 +413,37 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
     session = Session(state_path=options.state_path, logs_dir=options.logs_dir)
     if not session.exists():
-        err(f"No saved session at {options.state_path}. Run 'wqu login' first.")
+        ui.info(f"No saved session at {options.state_path}. Run 'wqu login' first.")
         return 2
 
-    err(f"Processing {len(files)} file(s){' (headless)' if options.headless else ''}...")
+    # Interactive prompting (assign decisions / duplicate handling) needs a
+    # plain terminal: keep the live bar off in that mode so prompts stay clean.
+    interactive_mode = _is_tty() and not args.yes and not any(
+        (args.assign, args.no_assign, args.keep_draft)
+    )
+    ui.console.print("")
+    ui.info(f"Processing {len(files)} file(s){' (headless)' if options.headless else ' (headed)'}...")
+    use_bar = not args.quiet and not interactive_mode
+    if use_bar:
+        ui.start(total=len(files))
     try:
         results = publish_many(
             files,
             options,
             session=session,
-            on_progress=progress,
+            on_progress=None if args.quiet else ui.on_progress,
             decide_assign=make_decide_assign(args),
             resolve_duplicate=make_resolve_duplicate(args),
+            choose_archive=make_choose_archive(args),
         )
     except SessionExpiredError as exc:
-        err(str(exc))
+        ui.info(str(exc))
         return 2
+    except LibraryLimitError as exc:
+        ui.info(str(exc))
+        return 2
+    finally:
+        ui.stop()
     return finish_publish(args, results)
 
 
@@ -284,31 +462,50 @@ def _results_fancy_text(results: list[FileResult]) -> Text:
     return text
 
 
+def _summary_table(results: list[FileResult]) -> Table:
+    """Per-file batch summary for the terminal (stderr)."""
+    table = Table(box=BOX_SIMPLE, pad_edge=False, show_edge=False)
+    table.add_column("File", style="bold", overflow="fold", max_width=40)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Join link / detail", overflow="fold")
+    for result in results:
+        name = Path(result.file).name
+        if result.skipped:
+            table.add_row(name, "[yellow]SKIP[/yellow]", "[dim]skipped by user[/dim]")
+        elif result.error is not None:
+            table.add_row(name, "[red]FAIL[/red]", f"[red]{escape(result.error)}[/red]")
+        elif result.join_link:
+            table.add_row(name, "[green]OK[/green]", f"[green]{escape(result.join_link)}[/green]")
+        else:
+            detail = escape(str(result.quiz_url or "(no quiz created)"))
+            table.add_row(name, "[green]OK[/green]", f"{detail} [yellow](NO JOIN LINK)[/yellow]")
+    return table
+
+
 def finish_publish(args: argparse.Namespace, results: list[FileResult]) -> int:
     any_error = any(r.error is not None for r in results)
     if args.json:
         print(format_json(results))
     else:
         block = format_links(results)
-        if not args.quiet:
-            err(format_summary(results))
-        elif any_error:
-            err(format_summary(results))  # --quiet still surfaces failures
         if args.quiet:
             # script mode: plain lines only, no clipboard, no decoration
             if block:
                 print(block)
+            if any_error:
+                err(format_summary(results))
         else:
+            console = err_console()
             # human mode: clipboard copy FIRST, then a pretty panel (headed-run
-            # feedback 2026-11-09: PowerShell output was hard to read).
+            # feedback 2026-11-09), then the summary table.
             if block:
                 if copy_to_clipboard(block):
-                    err("Copied the result block to the clipboard.")
+                    console.print("[dim]Copied the result block to the clipboard.[/dim]")
                 else:
-                    err("WARNING: could not copy to the clipboard.")
+                    console.print("[yellow]WARNING: could not copy to the clipboard.[/yellow]")
             content = _results_fancy_text(results)
             if content.plain:
-                out = Console(file=sys.stdout, soft_wrap=True)
+                out = Console(file=sys.stdout, soft_wrap=True, legacy_windows=False)
                 out.print("")  # spacing before the box
                 out.print(
                     Panel(
@@ -318,6 +515,10 @@ def finish_publish(args: argparse.Namespace, results: list[FileResult]) -> int:
                         expand=False,
                     )
                 )
+            console.print("")  # spacing before the summary
+            console.print(_summary_table(results))
+            caption = format_summary(results).splitlines()[0]
+            console.print(f"[dim]{escape(caption)}[/dim]")
     if any(r.error_kind == "session-expired" for r in results):
         err("Run 'wqu login' again.")
         return 2
@@ -331,75 +532,116 @@ def finish_publish(args: argparse.Namespace, results: list[FileResult]) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _styled_progress(console: Console):
+    def report(message: str) -> None:
+        console.print(f"[{_classify(message)}]{escape(message)}[/]")
+
+    return report
+
+
 def cmd_login(args: argparse.Namespace) -> int:
     log_path = setup_logging("login", args.logs_dir)
-    err(f"Log: {log_path}")
+    print_banner("login")
+    console = err_console()
+    console.print(f"[dim]Log: {log_path}[/dim]")
     session = Session(logs_dir=args.logs_dir)
 
     def wait_for_login() -> None:
-        err("Sign in to Wayground in the opened browser window.")
+        console.print("[cyan]Sign in to Wayground in the opened browser window.[/cyan]")
         _prompt_line("Press Enter here when you are done... ")
 
     result = session.login(
         headless=False,
         wait_for_login=wait_for_login if _is_tty() else None,
-        on_progress=progress,
+        on_progress=_styled_progress(console),
     )
     if result.ok:
-        err(f"[OK] {result.detail}")
+        console.print(f"[bold green][OK][/bold green] {escape(result.detail)}")
         return 0
-    err(f"[FAIL] {result.detail}")
+    console.print(f"[bold red][FAIL][/bold red] {escape(result.detail)}")
     return 2
 
 
 def cmd_check(args: argparse.Namespace) -> int:
     log_path = setup_logging("check", args.logs_dir)
-    err(f"Log: {log_path}")
+    print_banner("check")
+    console = err_console()
+    console.print(f"[dim]Log: {log_path}[/dim]")
     session = Session(logs_dir=args.logs_dir)
-    result = session.check(headless=True, on_progress=progress)
+    result = session.check(headless=True, on_progress=_styled_progress(console))
     if result.ok:
-        err(f"[OK] {result.detail}")
+        console.print(f"[bold green][OK][/bold green] {escape(result.detail)}")
         return 0
-    err(f"[EXPIRED] {result.detail}")
+    console.print(f"[bold red][EXPIRED][/bold red] {escape(result.detail)}")
     return 2
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
+    print_banner("doctor")
+    console = err_console()
     checks = Session(logs_dir=args.logs_dir).doctor()
     failed = 0
+    console.print("")
     for check in checks:
         if check.ok:
-            err(f"[OK]   {check.name} — {check.detail}")
+            console.print(f"[green][OK][/green]   [bold]{escape(check.name)}[/bold] — {escape(check.detail)}")
         else:
             failed += 1
-            hint = f" (hint: {check.hint})" if check.hint else ""
-            err(f"[FAIL] {check.name} — {check.detail}{hint}")
+            hint = f" [yellow](hint: {escape(check.hint)})[/yellow]" if check.hint else ""
+            console.print(f"[red][FAIL][/red] [bold]{escape(check.name)}[/bold] — {escape(check.detail)}{hint}")
+    console.print("")
     if failed:
-        err(f"{failed} of {len(checks)} checks failed.")
+        console.print(f"[red]{failed} of {len(checks)} checks failed.[/red]")
         return 1
-    err(f"All {len(checks)} checks passed.")
+    console.print(f"[green]All {len(checks)} checks passed.[/green]")
+    return 0
+
+
+def cmd_library(args: argparse.Namespace) -> int:
+    log_path = setup_logging("library", args.logs_dir)
+    print_banner("library")
+    console = err_console()
+    console.print(f"[dim]Log: {log_path}[/dim]")
+    session = Session(logs_dir=args.logs_dir)
+    if not session.exists():
+        console.print("[red]No saved session[/red] — run [bold]wqu login[/bold] first.")
+        return 2
+
+    def wait_for_user() -> None:
+        try:
+            input("Press Enter when you are done managing the library... ")
+        except (KeyboardInterrupt, EOFError):
+            pass
+
+    from wqu.library import open_ui  # local import keeps --version startup fast
+
+    open_ui(session=session, wait_for_user=wait_for_user,
+            on_progress=_styled_progress(console))
     return 0
 
 
 def cmd_discover(args: argparse.Namespace) -> int:
     log_path = setup_logging("discover", args.logs_dir)
-    err(f"Log: {log_path}")
+    print_banner("discover")
+    console = err_console()
+    console.print(f"[dim]Log: {log_path}[/dim]")
     session = Session(logs_dir=args.logs_dir)
 
     def wait_for_user() -> None:
         try:
             input("Interact now. Press Ctrl+C when you are done.\n")
         except (KeyboardInterrupt, EOFError):
-            err("")
+            console.print("")
 
     if not session.exists():
-        err(f"No saved session at {session.state_path}. Run 'wqu login' first.")
+        console.print(f"[red]No saved session at {escape(str(session.state_path))}[/red] — "
+                      "run [bold]wqu login[/bold] first.")
         return 2
 
     from wqu.session import discover  # local import keeps --version startup fast
 
     result = discover(args.url, session=session, snaps_dir=Path("snaps"),
-                      wait_for_user=wait_for_user, on_progress=progress)
+                      wait_for_user=wait_for_user, on_progress=_styled_progress(console))
     print(result.screenshot)
     print(result.aria)
     print(result.html)
@@ -442,6 +684,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_logs_dir(p_discover)
     p_discover.set_defaults(func=cmd_discover)
 
+    p_library = sub.add_parser("library",
+                               help="open the Wayground library to manage/archive quizzes")
+    _add_logs_dir(p_library)
+    p_library.set_defaults(func=cmd_library)
+
     p_pub = sub.add_parser("publish", help="files or folders; full pipeline")
     p_pub.add_argument("paths", nargs="*", help="one or more .xlsx files and/or folders")
     p_pub.add_argument("--subject", default="Information Technology (IT)",
@@ -475,6 +722,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="non-interactive: take defaults for all prompts")
     p_pub.add_argument("--from-toolkit-root", metavar="PATH", default=None,
                        help=r"auto-discover Quizzes\*\_QuizizzOutput\*.xlsx under this root")
+    p_pub.add_argument("--auto-archive-oldest", type=int, metavar="N", default=None,
+                       help="when the 20-quiz library cap would be exceeded, archive the N oldest "
+                            "quizzes automatically (no prompt)")
     _add_logs_dir(p_pub)
     p_pub.set_defaults(func=cmd_publish)
 

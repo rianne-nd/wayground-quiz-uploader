@@ -73,6 +73,18 @@ then a `data-wqu-dialog` marker on the nearest fixed/absolute overlay).
 | Accommodations glitch page | text "Set up learning supports" / "Add Accommodations" | **verified-live** (glitch observed) |
 | Glitch back arrow | role button **"chevron-left"** → "Back" → Escape → go_back | **verified-live** (recovery observed; first candidate is inferred from the app-wide back icon) |
 
+## Library page (`/my-library/admin/my-library/createdByMe`)
+
+| Element | Selector | Status |
+|---|---|---|
+| Active counter | `[data-testid=item-count-created-by-me-pill]` → "11 / 20" | **verified-live** |
+| Quiz row | `[data-testid=ui-table-row-{quiz_id}]` | **verified-live** |
+| Row title | `[data-testid=activity-card-title]` | **verified-live** |
+| Row age | relative text ("47 minutes ago"; may contain nbsp) | **verified-live** |
+| Row checkbox | `input[data-testid=ui-table-row-checkbox-{quiz_id}]` — styled-covered, toggle via JS click | **verified-live** |
+| Bulk bar | "N activity selected" + button `aria-label="Archive"` | **verified-live** |
+| Onboarding tip | button "Got it" (`onboarding-primary-cta`) | **verified-live** |
+
 ## Maintenance
 
 Re-verify after any Wayground UI change with:

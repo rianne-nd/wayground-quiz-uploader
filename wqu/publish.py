@@ -19,11 +19,13 @@ from pathlib import Path
 from playwright.sync_api import Locator, Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from wqu import library as lib
 from wqu import selectors as S
 from wqu.assign import assign_one
 from wqu.errors import (
     AssignError,
     ClassNotFoundError,
+    LibraryLimitError,
     PublishError,
     SelectorNotFoundError,
     SessionExpiredError,
@@ -80,6 +82,7 @@ class PipelineOptions:
     force_import: bool = False
     fail_fast: bool = False
     headless: bool = True
+    auto_archive_oldest: int | None = None  # free-tier cap: archive N oldest first
     state_path: Path = field(default_factory=default_state_path)
     logs_dir: Path = field(default_factory=lambda: Path("wqu-logs"))
 
@@ -672,12 +675,16 @@ def publish_many(
     should_cancel: Callable[[], bool] | None = None,
     decide_assign: DecideAssignFn | None = None,
     resolve_duplicate: ResolveDuplicateFn | None = None,
+    choose_archive: lib.ChooseArchiveFn | None = None,
 ) -> list[FileResult]:
     """Run the pipeline over many workbooks with ONE browser session.
 
     ``should_cancel`` is checked at the top of every file iteration.
     ``decide_assign`` lets the caller (CLI prompt / future GUI) decide per
     file whether to assign and to which class, after the quiz is published.
+    ``choose_archive`` is asked (interactive CLI / GUI) when the free-tier
+    library cap would be exceeded; ``options.auto_archive_oldest`` archives
+    automatically without prompting.
     """
     options = options or PipelineOptions()
     session = session or Session(state_path=options.state_path, logs_dir=options.logs_dir)
@@ -686,6 +693,22 @@ def publish_many(
     results: list[FileResult] = []
 
     with session.open(headless=options.headless, trace=True) as handle:
+        # Pre-flight: free-tier cap (20 active quizzes). A failure to read the
+        # library must never block the run — only a *real* cap problem does.
+        try:
+            archived, total = lib.ensure_capacity(
+                handle.page,
+                new_count=len(paths),
+                auto_archive_oldest=options.auto_archive_oldest,
+                choose_archive=choose_archive,
+                on_progress=on_progress,
+            )
+            if archived:
+                _log(on_progress, f"Archived {archived} quiz(zes); library now at {total} active.")
+        except LibraryLimitError:
+            raise
+        except Exception as exc:
+            _log(on_progress, f"Library pre-check skipped ({exc.__class__.__name__}: {exc})")
         for index, file in enumerate(paths):
             if should_cancel is not None and should_cancel():
                 _log(on_progress, "Cancelled by the caller; stopping.")
