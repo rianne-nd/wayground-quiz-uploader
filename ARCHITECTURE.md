@@ -51,6 +51,11 @@ wqu/core.py           the public import surface (re-exports only)
 ## Per-file pipeline (`publish_many`)
 
 ```
+open browser (storage state) ──(missing state)──▶ SessionExpiredError
+login pre-flight: probe the assessment page
+  └─ not signed in ▶ SessionExpiredError (BEFORE any create/import work)
+  └─ signed in     ▶ continue
+library pre-check (20-cap; SessionExpiredError is never swallowed)
 for each file (should_cancel checked here):
   load_xlsx + validate ──(errors)──▶ FileResult(error="local validation failed…")
   duplicate-title check vs ~/.wayground/created.json (unless --force)
@@ -92,6 +97,22 @@ calls later is a local change: the pipeline only calls `publish.py` /
 
 ## Hard-won behaviours (LIVE 2026-11-08)
 
+- **Login pre-flight (v0.1.4):** `publish_many` probes the stored session on
+  the assessment page *before* the library pre-check and before creating a
+  quiz. `Session.is_authenticated()` polls in 250 ms steps and returns as soon
+  as the URL bounces to `/login`, a "Log in / Sign in / Sign up" CTA is
+  visible, or the page has settled on a protected admin URL (`/activity/`,
+  `/explore/`, `/my-library/`) for ~1.5 s. The heading copy is **not**
+  contractual — waiting the full timeout for it made sign-in look like a hang.
+  The library pre-check re-raises `SessionExpiredError` instead of swallowing
+  it (it used to log "pre-check skipped" and let the run continue into the
+  create/upload flow, which then took ~40 s to fail). The CLI catches the
+  error, tells the user, opens a **headed** login browser (`Session.login`),
+  and retries the same batch. `login()` writes the storage state **immediately
+  after the user confirms**, then verifies — so a slow/flaky probe can never
+  discard a sign-in the user just completed. Auto-login is limited to an
+  interactive TTY in the default human mode; `--yes` / `--quiet` / `--json`
+  exit 2 instead. Regression: `tests/test_login_preflight.py`.
 - **aria-label overrides**: the top-bar Publish button's accessible name is
   "Publish quiz"; the modal X is "xmark"; several buttons expose icon aria
   names ("chevron-left", "copy", "trash").
@@ -240,6 +261,18 @@ The pre-flight runs at the top of `publish_many()` on the same browser
 session; any *read* failure is logged and skipped (never blocks a run), while
 a real cap problem aborts cleanly. `wqu library` opens the same page headed
 for manual management.
+
+Library entry points (all share `scan_library` / `archive_items`):
+
+| Entry point | Purpose |
+|---|---|
+| `publish_many()` pre-flight | make room before a batch (interactive chooser or `--auto-archive-oldest N`) |
+| `wqu list [--json]` | read-only inventory: index/title/age/short id; JSON `{total, limit, quizzes}` |
+| `wqu archive --all / --test / --id <ids> / (interactive)` | targeted cleanup; `--test` matches titles containing TEST / sample / WQU_V / DELETE_ME (`is_test_artifact`) |
+| `wqu library` | headed browser for manual management |
+
+`archive_items` returns the quiz ids whose rows actually detached, so the CLI
+can print a `✓ Archived:` line per confirmed quiz.
 
 ## Terminal UX & speed (v0.1.3)
 

@@ -123,6 +123,42 @@ def select_for_archive(spec: str, scan: LibraryScan, needed: int) -> tuple[str, 
     return tuple(i.quiz_id for i in scan.items if i.row_index in wanted)
 
 
+# Markers used by `wqu archive --test` to recognise development artifacts.
+TEST_MARKERS: tuple[str, ...] = ("TEST", "sample", "WQU_V", "DELETE_ME")
+
+
+def is_test_artifact(title: str) -> bool:
+    """True when the quiz title looks like a development/test artifact.
+
+    Case-insensitive substring match against TEST_MARKERS
+    (e.g. "sample_single", "WQU_V012_TEST", "WQU_TEST_DELETE_ME").
+    """
+    lowered = title.lower()
+    return any(marker.lower() in lowered for marker in TEST_MARKERS)
+
+
+def select_test_artifacts(items: Sequence[LibraryItem]) -> tuple[LibraryItem, ...]:
+    return tuple(item for item in items if is_test_artifact(item.title))
+
+
+def select_by_ids(
+    items: Sequence[LibraryItem], wanted: Sequence[str]
+) -> tuple[tuple[LibraryItem, ...], list[str]]:
+    """Match quizzes by exact id or unique prefix; returns (matches, missing)."""
+    chosen: list[LibraryItem] = []
+    missing: list[str] = []
+    for target in wanted:
+        exact = [item for item in items if item.quiz_id == target]
+        matches = exact or [item for item in items if item.quiz_id.startswith(target)]
+        if not matches:
+            missing.append(target)
+            continue
+        for item in matches:
+            if item not in chosen:
+                chosen.append(item)
+    return tuple(chosen), missing
+
+
 def _dismiss_library_tip(page: Page) -> None:
     tip = S.first_visible(page, S.GOT_IT_BUTTON)
     if tip is None:
@@ -239,10 +275,14 @@ def _maybe_confirm_archive(page: Page) -> bool:
     return False
 
 
-def archive_items(page: Page, items: Sequence[LibraryItem], *, on_progress: ProgFn = None) -> int:
-    """Tick the rows' checkboxes and click the bulk-bar Archive button."""
+def archive_items(page: Page, items: Sequence[LibraryItem], *, on_progress: ProgFn = None) -> tuple[str, ...]:
+    """Tick the rows' checkboxes and click the bulk-bar Archive button.
+
+    Returns the quiz ids whose rows actually detached afterwards (i.e. the
+    ones that were successfully archived).
+    """
     if not items:
-        return 0
+        return ()
     _log(on_progress, f"Archiving {len(items)} quiz(zes) on the library page...")
     if "my-library" not in page.url:
         page.goto(LIBRARY_URL, wait_until="domcontentloaded", timeout=60_000)
@@ -278,18 +318,17 @@ def archive_items(page: Page, items: Sequence[LibraryItem], *, on_progress: Prog
         raise LibraryError("could not click the library 'Archive' button") from exc
     _maybe_confirm_archive(page)
 
-    missing = 0
+    archived_ids: list[str] = []
     for item in items:
         try:
             page.locator(f'[data-testid="ui-table-row-{item.quiz_id}"]').first.wait_for(
                 state="detached", timeout=15_000
             )
+            archived_ids.append(item.quiz_id)
         except PlaywrightTimeoutError:
-            missing += 1
             log.warning("row for %r is still listed after archiving", item.title)
-    archived = selected - missing
-    _log(on_progress, f"Archived {archived} quiz(zes).")
-    return archived
+    _log(on_progress, f"Archived {len(archived_ids)} quiz(zes).")
+    return tuple(archived_ids)
 
 
 def ensure_capacity(

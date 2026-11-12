@@ -134,6 +134,8 @@ wqu publish "Quizzes\DataComs\_QuizizzOutput" --dry-run
 | `wqu doctor` | Environment diagnostics: Python, Playwright + Chromium, session age, network, logs dir, openpyxl. |
 | `wqu discover <url>` | Opens the URL headed; on Ctrl+C saves HTML/aria/screenshot to `./snaps/` — the canonical way to re-verify selectors. |
 | `wqu library` | Opens your Wayground library headed so you can archive/manage quizzes (free accounts cap active quizzes at 20). |
+| `wqu list` | Lists active quizzes (number, title, age, short id); `--json` emits `{total, limit, quizzes}` for scripting. |
+| `wqu archive` | Archives quizzes: `--all`, `--test` (dev artifacts), `--id <id>...` (exact or prefix), or an interactive numbered table. |
 | `wqu publish <path>...` | Files and/or folders; the full pipeline. |
 
 ### `wqu publish` flags
@@ -163,6 +165,20 @@ Output rules: everything status-like goes to **stderr**; the final
 `Label: URL` block (or `--json`) goes to **stdout** and is copied to your
 clipboard in human mode only. Exit codes: `0` all good, `1` a file failed,
 `2` configuration/session problem (e.g. run `wqu login` again).
+
+### Managing the library from the CLI
+
+```powershell
+wqu list                       # index, title, age, short id + X/20 counter
+wqu list --json                # machine-readable (future GUI / scripting)
+wqu archive --test             # dev artifacts: title contains TEST / sample / WQU_V / DELETE_ME
+wqu archive --id 6af0806f      # by id (exact, or a unique prefix); several ids allowed
+wqu archive --all              # everything (asks for confirmation in a terminal)
+wqu archive                    # no flags: interactive numbered table + prompt
+```
+
+Every archive prints `✓ Archived: <title>` per quiz and ends with
+`Archived N quiz(zes). Library is now X/20.`
 
 Troubleshooting and recovery (expired sessions, red banners, live-UI crashes,
 where traces land): see [docs/troubleshooting.md](docs/troubleshooting.md).
@@ -211,9 +227,10 @@ and between-files cancellation — the pieces a GUI needs on day one.
 
 ## Known limitations
 
-- **Session expiry:** Wayground sessions expire; when they do, `wqu check`
-  prints `[EXPIRED]` and runs exit with "run `wqu login` again". Re-login is
-  a manual step by design.
+- **Session expiry:** Wayground sessions expire. `wqu publish` probes the
+  login first; in an interactive terminal it tells you and opens a browser to
+  sign in, then continues the batch. Non-interactive runs exit **2** with
+  "run `wqu login` again".
 - **UI drift:** this is DOM automation. Wayground ships UI changes; if a
   selector breaks you get a screenshot + Playwright trace in `wqu-logs/`.
   Re-verify with `wqu discover <url>` and update `wqu/selectors.py`

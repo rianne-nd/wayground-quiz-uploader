@@ -35,7 +35,7 @@ from wqu.errors import (
 )
 from wqu.logging_setup import run_stamp
 from wqu.output import FileResult, validate_join_link
-from wqu.session import BrowserHandle, Session
+from wqu.session import BrowserHandle, Session, looks_like_login
 from wqu.store import default_state_path, find_by_title, record_created
 from wqu.upload import QuizData, load_xlsx, title_from_filename
 
@@ -148,8 +148,7 @@ def dismiss_premium_popup(page: Page, on_progress: ProgFn = None) -> bool:
 
 def guard_session(page: Page) -> None:
     """Raise SessionExpiredError when a nav bounced us to a login page."""
-    url = page.url.lower()
-    if any(token in url for token in ("/login", "/signin", "/signup")):
+    if looks_like_login(page.url):
         raise SessionExpiredError("Session expired mid-flow. Run 'wqu login' again.")
 
 
@@ -695,6 +694,18 @@ def publish_many(
     results: list[FileResult] = []
 
     with session.open(headless=options.headless, trace=True) as handle:
+        # Login pre-flight: verify the stored session BEFORE the library check
+        # or any create/import work. Without this, an expired session used to
+        # be swallowed by the library pre-check below and the run then spent
+        # ~40 s walking the create/upload flow before timing out.
+        _log(on_progress, "Checking your Wayground login...")
+        if not session.is_authenticated(handle.page, on_progress=on_progress):
+            raise SessionExpiredError(
+                f"Not signed in to Wayground — the saved session at {session.state_path} "
+                "is missing or has expired."
+            )
+        _log(on_progress, "Login OK.")
+
         # Pre-flight: free-tier cap (20 active quizzes). A failure to read the
         # library must never block the run — only a *real* cap problem does.
         try:
@@ -707,7 +718,7 @@ def publish_many(
             )
             if archived:
                 _log(on_progress, f"Archived {archived} quiz(zes); library now at {total} active.")
-        except LibraryLimitError:
+        except (LibraryLimitError, SessionExpiredError):
             raise
         except Exception as exc:
             _log(on_progress, f"Library pre-check skipped ({exc.__class__.__name__}: {exc})")

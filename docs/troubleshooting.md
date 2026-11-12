@@ -2,15 +2,31 @@
 
 ## Session expired / "run `wqu login` again"
 
-Symptoms: `wqu check` prints `[EXPIRED]`; a run exits **2** with "Session
-expired mid-flow" or "No saved session at C:\Users\…\.wayground\state.json".
+Symptoms: `wqu check` prints `[EXPIRED]`; a run exits **2** with "Not signed
+in to Wayground" or "No saved session at C:\Users\…\.wayground\state.json".
 
-Fix:
+Every `wqu publish` now probes the login **before** the library check and
+before any quiz is created, so an expired session is caught in seconds instead
+of timing out part-way through an upload. In an interactive terminal the tool
+says so and **opens a browser window for you to sign in**; press Enter here
+when you're done and the same batch continues automatically.
+
+Sign-in detection does not depend on a specific heading. A `/login` redirect
+or a visible "Log in / Sign in" button means signed out; landing on a
+protected admin page (`/activity/…`, `/explore/…`) without one means signed
+in. The session is written to `~/.wayground/state.json` as soon as you press
+Enter (verification happens after), so a slow probe can never lose a login you
+just completed.
+
+Fix manually any time:
 
 ```powershell
 wqu login
 wqu check    # expect: [OK] Session is valid.
 ```
+
+Non-interactive runs (`--yes`, `--quiet`, `--json`, piped input) never open a
+browser — they exit **2** with the message so a script can re-run `wqu login`.
 
 Runs abort (rather than limping on) when the session dies mid-file. A run
 that dies this way stops cleanly; already-published quizzes are recorded in

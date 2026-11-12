@@ -80,6 +80,22 @@ first unticked item. Do not restart from scratch.
   `Live(get_renderable=self._render, ...)` (still refreshes spinner frames and timers).
   Added regression test `test_live_tree_ui_prints_preamble_while_live`; suite:
   94 passed, 3 skipped (integration), ruff clean.
+- 2026-11-13 (v0.1.5): Library management commands + folded-in v0.1.4 login pre-flight:
+  * `wqu list [--json]`: headless scan → rich table (# / title / age / short id) or JSON
+    `{total, limit, quizzes[]}` on stdout.
+  * `wqu archive`: `--all` (confirms in a terminal), `--test` (titles containing TEST / sample /
+    WQU_V / DELETE_ME via the pure `is_test_artifact`), `--id <ids>` (exact or unique prefix,
+    missing ids reported), or no flags → interactive numbered table + prompt. Prints
+    `✓ Archived: <title>` per confirmed quiz + `Archived N quiz(zes). Library is now X/20.`
+    (`archive_items` now returns the ids whose rows actually detached).
+  * EOF-safe prompts (isatty can lie in captured shells): archive Prompt/Confirm and the
+    `--all` confirmation degrade gracefully instead of raising EOFError.
+  * v0.1.4 (from the parallel session, folded into this release): login pre-flight in
+    `publish_many` (`Checking your Wayground login... / Login OK.`), `Session.is_authenticated`
+    settle-loop with protected-URL fallback, state saved before probing, and an interactive
+    re-login + retry flow in the CLI for expired sessions.
+  * Tests: 117 passing (filter logic, id matching, JSON payload, flag validation, EOF safety,
+    login-preflight regressions); README commands table and ARCHITECTURE entry points updated.
 - 2026-11-08 (v0.1.3): Live step-tree UI (`wqu/ui.py`):
   * `LiveTreeUI` renders a continuously-updated rich.live.Live region on stderr: overall files bar +
     per-file panel `[i/n] name` with a step catalog (~33 expected steps) matched against on_progress

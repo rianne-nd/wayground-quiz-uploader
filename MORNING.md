@@ -37,6 +37,21 @@ Delete them in the Wayground UI when convenient:
 > as the renderable). Fixed with `Live(get_renderable=...)`; regression test
 > added. 94 unit tests pass.
 >
+> **Update 2026-11-10 (v0.1.4):** login pre-flight. `wqu publish` now probes
+> the stored session before the library check and before creating anything; an
+> expired/missing session used to slip past (the library pre-check swallowed
+> `SessionExpiredError`) and the run burned ~40 s in the create/import flow.
+> Sign-in detection is eager: a `/login` bounce or a "Log in / Sign in" CTA
+> means signed out, and a protected admin URL (`/activity/`, `/explore/`) with
+> no such CTA counts as signed in after ~1.5 s — the old probe waited up to
+> 30 s for the exact "How would you like to get started?" heading, which made
+> a successful sign-in look like a hang. The state is now saved immediately
+> after you press Enter, before verification, so a slow probe can no longer
+> lose your login. In an interactive terminal the CLI says you're signed out,
+> **opens a browser for you to sign in**, and retries the same batch
+> automatically; `--yes` / `--quiet` / `--json` exit 2 with the message
+> instead. 109 unit tests pass (`tests/test_login_preflight.py`).
+>
 > **Update 2026-11-08 (v0.1.3 UI follow-up):** completed file boxes now freeze
 > as full reports — all 33 steps with per-step timings — instead of collapsing
 > to "... (N earlier steps)". In-progress files keep the compact window; batch

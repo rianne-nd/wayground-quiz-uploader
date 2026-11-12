@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -37,6 +38,16 @@ LOGIN_URL = "https://wayground.com/login"
 HOME_URL = "https://wayground.com"
 PROBE_URL = "https://wayground.com/activity/admin/assessment"
 REACHABILITY_URL = "https://wayground.com"
+# URL fragments that prove the app bounced us to a sign-in page.
+LOGIN_URL_TOKENS = ("/login", "/signin", "/signup", "/auth")
+# The authenticated assessment chooser's heading (see screenshots/step_01.png).
+LOGGED_IN_MARKER = "How would you like to get started?"
+# Admin URLs that only render for a signed-in user. Used as a fast-path
+# fallback: the heading copy is not contractual, so we must not hang waiting
+# for it when the URL already proves we are past the login wall.
+PROTECTED_URL_MARKERS = ("/activity/", "/explore/", "/my-library/", "/library/")
+# Accessible names that only appear when the browser is signed out.
+SIGNED_OUT_CTA = re.compile(r"\b(log ?in|sign ?in|sign ?up)\b", re.IGNORECASE)
 
 CONTEXT_KWARGS: dict = {
     "locale": "en-US",
@@ -114,6 +125,20 @@ def _log_progress(on_progress: ProgFn, message: str) -> None:
     log.info(message)
     if on_progress is not None:
         on_progress(message)
+
+
+def looks_like_login(url: str) -> bool:
+    """True when ``url`` is a Wayground sign-in page (i.e. the session bounced)."""
+    lowered = (url or "").lower()
+    return any(token in lowered for token in LOGIN_URL_TOKENS)
+
+
+def looks_like_protected_page(url: str) -> bool:
+    """True when ``url`` is an admin page that only renders when signed in."""
+    lowered = (url or "").lower()
+    if looks_like_login(lowered):
+        return False
+    return any(token in lowered for token in PROTECTED_URL_MARKERS)
 
 
 class Session:
@@ -202,32 +227,68 @@ class Session:
             try:
                 page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=45_000)
             except Exception:
-                page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45_000)
+                try:
+                    page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45_000)
+                except Exception as exc:
+                    log.info("could not open the Wayground login page: %s", exc)
+            had_state = self.exists()
             if wait_for_login is not None:
                 _log_progress(on_progress, "Sign in to Wayground in the opened browser, then confirm here.")
                 wait_for_login()
-                ok = self._probe(page, timeout_ms=30_000, on_progress=on_progress)
+                # Persist BEFORE probing. A slow or wrong probe must never
+                # discard a sign-in the user just completed (that is exactly
+                # how a successful login used to be lost: the probe waited on
+                # a heading that had been reworded and the user closed the
+                # terminal first).
+                self._save_state(handle)
+                _log_progress(on_progress, "Verifying the sign-in...")
+                ok = self._probe(page, timeout_ms=15_000, on_progress=on_progress)
             else:
                 _log_progress(on_progress, f"Waiting up to {timeout_s}s for sign-in to complete...")
                 ok = self._poll_authenticated(page, timeout_s=timeout_s, on_progress=on_progress)
+                if ok:
+                    self._save_state(handle)
             if not ok:
+                if not had_state:  # never leave an empty state file behind
+                    try:
+                        self.state_path.unlink()
+                    except OSError:
+                        pass
                 return LoginResult(False, str(self.state_path), "Sign-in was not detected in time.")
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            handle.context.storage_state(path=str(self.state_path))
-            try:
-                os.chmod(self.state_path, 0o600)  # no-op/ignored on Windows ACLs
-            except OSError:
-                pass
             return LoginResult(True, str(self.state_path), f"Session saved to {self.state_path}")
+
+    def _save_state(self, handle: BrowserHandle) -> None:
+        """Write the context's cookies to ``state_path`` (0600 where supported)."""
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        handle.context.storage_state(path=str(self.state_path))
+        try:
+            os.chmod(self.state_path, 0o600)  # no-op/ignored on Windows ACLs
+        except OSError:
+            pass
 
     def check(self, *, headless: bool = True, on_progress: ProgFn = None) -> CheckResult:
         """Lightweight probe of the stored session."""
         if not self.exists():
             return CheckResult(False, f"No saved session at {self.state_path}. Run 'wqu login'.")
         with self.open(headless=headless) as handle:
-            if self._probe(handle.page, timeout_ms=25_000, on_progress=on_progress):
+            if self.is_authenticated(handle.page, timeout_ms=25_000, on_progress=on_progress):
                 return CheckResult(True, "Session is valid.")
             return CheckResult(False, "Session looks expired. Run 'wqu login' again.")
+
+    def is_authenticated(
+        self,
+        page: Page,
+        *,
+        timeout_ms: int = 15_000,
+        on_progress: ProgFn = None,
+    ) -> bool:
+        """Probe an already-open page for a usable signed-in session.
+
+        The pipeline calls this as a pre-flight: an expired session is then
+        detected in a couple of seconds instead of walking the whole
+        create/import flow and timing out (~40 s).
+        """
+        return self._probe(page, timeout_ms=timeout_ms, on_progress=on_progress)
 
     def _poll_authenticated(self, page: Page, *, timeout_s: int, on_progress: ProgFn) -> bool:
         deadline = time.monotonic() + timeout_s
@@ -242,30 +303,54 @@ class Session:
 
         Observable signals (screenshots/step_01.png): the assessment chooser
         heading proves an authenticated admin session; a /login URL or a
-        visible "Log in" call-to-action proves the opposite.
+        visible "Log in / Sign in" call-to-action proves the opposite.
+
+        Detection is deliberately eager:
+          * a login URL or a visible "Log in" CTA means signed out;
+          * the exact heading copy is *not* contractual — after a short settle
+            (~1.5 s) a protected admin URL with no login CTA counts as signed
+            in. Waiting the full timeout for a heading that may have been
+            reworded is what made sign-in look like a hang (and, if the user
+            closed the terminal first, the state was never saved).
         """
         try:
             page.goto(PROBE_URL, wait_until="domcontentloaded", timeout=timeout_ms)
         except PlaywrightTimeoutError:
             log.info("probe navigation timed out")
-        try:
-            page.get_by_text("How would you like to get started?", exact=False).first.wait_for(timeout=timeout_ms)
-            return True
-        except PlaywrightTimeoutError:
-            pass
-        url = page.url.lower()
-        if any(token in url for token in ("/login", "/signin", "/signup", "/auth")):
-            return False
-        try:
-            login_cta = page.get_by_role("link", name="Log in").or_(
-                page.get_by_role("button", name="Log in")
-            ).first
-            if login_cta.is_visible(timeout=2_000):
+        except Exception as exc:  # redirects can abort navigation (net::ERR_ABORTED)
+            log.info("probe navigation failed: %s", exc)
+
+        marker = page.get_by_text(LOGGED_IN_MARKER, exact=False).first
+        login_cta = page.get_by_role("link", name=SIGNED_OUT_CTA).or_(
+            page.get_by_role("button", name=SIGNED_OUT_CTA)
+        ).first
+
+        waited = 0
+        step = 250
+        settle_ms = 1_500
+        while True:
+            url = page.url
+            if looks_like_login(url):
                 return False
-        except Exception:
-            pass
+            try:
+                if marker.is_visible():
+                    return True
+            except Exception:
+                pass
+            try:
+                if login_cta.is_visible():
+                    return False
+            except Exception:
+                pass
+            if waited >= settle_ms and looks_like_protected_page(url):
+                return True
+            if waited >= timeout_ms:
+                break
+            page.wait_for_timeout(step)
+            waited += step
+
         # Unknown state: treat any admin URL that did not bounce to login as ok.
-        authenticated = "/activity/" in url or "/explore/" in url
+        authenticated = looks_like_protected_page(page.url)
         _log_progress(on_progress, f"Session probe inconclusive at {page.url}; assuming "
                       + ("valid" if authenticated else "expired"))
         return authenticated

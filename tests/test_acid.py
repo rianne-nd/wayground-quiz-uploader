@@ -12,6 +12,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 from wqu import publish as publish_mod
 from wqu.core import FileResult, PipelineOptions, publish_one
@@ -22,7 +23,9 @@ LINK = "https://wayground.com/join?gc=24923411&source=liveDashboard"
 
 @contextmanager
 def _fake_open(self, **kwargs):  # noqa: ANN001, ANN202
-    yield object()  # the handle is unused because _process_one is faked below
+    # the handle is unused because _process_one is faked below, but the login
+    # pre-flight reads handle.page before anything else runs.
+    yield SimpleNamespace(page=object())
 
 
 def test_acid_publish_one_with_mocked_browser(tmp_path: Path, fixtures_dir: Path, monkeypatch) -> None:
@@ -31,6 +34,7 @@ def test_acid_publish_one_with_mocked_browser(tmp_path: Path, fixtures_dir: Path
     options = PipelineOptions(state_path=state, logs_dir=tmp_path / "logs")
 
     monkeypatch.setattr(Session, "open", _fake_open)
+    monkeypatch.setattr(Session, "is_authenticated", lambda self, page, **kw: True)
 
     def fake_process(handle, file, opts, decide, resolve, run_id, on_progress):  # noqa: ANN001
         return FileResult(
@@ -53,6 +57,7 @@ def test_acid_should_cancel_checked_between_files(tmp_path: Path, fixtures_dir: 
     state.write_text("{}", encoding="utf-8")
     options = PipelineOptions(state_path=state, logs_dir=tmp_path / "logs")
     monkeypatch.setattr(Session, "open", _fake_open)
+    monkeypatch.setattr(Session, "is_authenticated", lambda self, page, **kw: True)
 
     calls: list[str] = []
 
