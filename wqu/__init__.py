@@ -7,4 +7,4 @@ The importable library API lives in ``wqu.core``. This module holds only the
 package version.
 """
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"

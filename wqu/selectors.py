@@ -848,6 +848,56 @@ LIBRARY_CONFIRM_ARCHIVE = Sel(
     evidence='confirmation modal "2 things to consider before you archive" → "Archive (1)" '
     '(probe 2026-11-09; archiving verified: counter 11 → 10)',
 )
+CREATE_CLASS_BUTTON = Sel(
+    "create_class_button",
+    (
+        ("role", "button", "Create a class"),
+        ("role", "button", "Create class", False),
+    ),
+    status="visual",
+    evidence="screenshots (2026-11-13): pink 'Create a class' button top-right of the classes page",
+)
+CREATE_CLASS_DIALOG_TITLE = Sel(
+    "create_class_dialog_title",
+    (
+        ("text", "Create a new class", False),
+    ),
+    status="visual",
+    evidence="screenshots (2026-11-13): 'Create a new class' modal heading",
+)
+CLASS_NAME_INPUT = Sel(
+    "class_name_input",
+    (
+        ("placeholder", "Enter class name"),
+        ("label", "Enter class name"),
+    ),
+    status="visual",
+    evidence="screenshots (2026-11-13): 'Enter class name' input in the modal",
+)
+GUARDIAN_EMAIL_CHECKBOX = Sel(
+    "guardian_email_checkbox",
+    (
+        ("role", "checkbox", "Require students to enter a guardian's email address", False),
+        ("regex", r"guardian"),
+        (
+            "xpath",
+            "//*[contains(normalize-space(text()), 'guardian')]"
+            "/ancestor-or-self::*[.//input[@type='checkbox']][1]"
+            "//input[@type='checkbox']",
+        ),
+    ),
+    status="visual",
+    evidence="screenshots (2026-11-13): guardian email checkbox in the create-class modal",
+)
+CREATE_CLASS_CONFIRM = Sel(
+    "create_class_confirm",
+    (
+        ("role", "button", "re:^create class$"),
+        ("text", "Create class", True),
+    ),
+    status="visual",
+    evidence="screenshots (2026-11-13): pink 'Create class' button in the modal footer",
+)
 GOT_IT_BUTTON = Sel(
     "got_it_button",
     (

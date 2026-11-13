@@ -76,9 +76,12 @@ wqu publish "Quizzes\DataComs\_QuizizzOutput" --dry-run
    screenshot; `--force-import` overrides).
 3. Fills the publish modal (Name / Subject / Grade) and publishes.
 4. Asks per file whether to assign. Two paths:
-   - **with a class** (`--assign Naic`, or answering `y`): tick the class,
-     force-uncheck "Set up Accommodations", name the assignment, set
-     **No deadline**, then click **Assign**;
+   - **with a class** (`--assign <name>`, or answering `y`): the class picker
+     is **scraped live** — your actual classes, no hardcoded names. If the
+     requested class is missing (or the account has none), you're asked to
+     pick an existing class, **create a new one**, or assign publicly. Then:
+     tick the class, force-uncheck "Set up Accommodations", name the
+     assignment, set **No deadline**, click **Assign**;
    - **public** (answering `N`, or `--no-assign`): skip straight to the final
      **Assign** — the quiz is assigned publicly with the platform's default
      1-day deadline.
@@ -145,7 +148,8 @@ wqu publish "Quizzes\DataComs\_QuizizzOutput" --dry-run
 | `--subject "Information Technology (IT)"` | as shown | subject in the publish modal |
 | `--grade University` | `University` | grade in the publish modal |
 | `--title <name>` | derived from filename | quiz title (single file only); `Quizizz_` is stripped, `_pt<N>` → `_Pt<N>` |
-| `--assign <class>` | — | force-assign to this class (skips the prompt) |
+| `--assign <class>` | — | force-assign to this class (skips the prompt; if missing, see below) |
+| `--create-class` | off | create the requested class automatically when it does not exist (no prompt) |
 | `--no-assign` | — | skip the class picker; still assigns **publicly** (1-day deadline) so a join link is produced; suppresses the prompt |
 | `--no-deadline` / `--deadline` | no deadline | `--deadline` reserved for future use (class flow only; the public flow always keeps the platform default) |
 | `--no-headless` | off (headless) | show the browser window |
@@ -180,6 +184,24 @@ wqu archive                    # no flags: interactive numbered table + prompt
 Every archive prints `✓ Archived: <title>` per quiz and ends with
 `Archived N quiz(zes). Library is now X/20.`
 
+### Dynamic classes (no more hardcoded "Naic")
+
+The class you assign to is discovered at runtime from the "Assign to a class"
+modal. Behavior:
+
+- requested class exists → selected silently (`--assign <name>` or answering
+  `y`, which prefers your usual class);
+- requested class missing → a prompt lists **your actual classes** and offers:
+  pick one by number, **[C]reate a new class**, or **[P]ublic assignment**;
+- no classes at all → `No classes found in your account.` + the same
+  Create/Public prompt;
+- `--create-class` skips the prompt and creates the requested class
+  automatically (then assigns to it);
+- new classes are created on the real classes page
+  (`/manage/admin/classes` → "Create a class" → name → optional
+  "Require students to enter a guardian's email address" → "Create class"),
+  then the assignment flow resumes automatically.
+
 Troubleshooting and recovery (expired sessions, red banners, live-UI crashes,
 where traces land): see [docs/troubleshooting.md](docs/troubleshooting.md).
 Selector inventory: [docs/selectors.md](docs/selectors.md).
@@ -211,7 +233,11 @@ around the same calls:
 from pathlib import Path
 from wqu.core import PipelineOptions, Session, publish_one
 
-options = PipelineOptions(assign_class="Naic", headless=True)
+options = PipelineOptions(class_name="Naic", headless=True)
+# class_name=None + a resolve_class callback lets a GUI drive the
+# select/create/public decision itself; create_class_if_missing=True
+# auto-creates the class when it does not exist. (assign_class is the
+# legacy alias for class_name, still accepted.)
 
 def progress(message: str) -> None:
     print(message)  # a GUI would update a progress bar instead

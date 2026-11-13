@@ -36,7 +36,8 @@ def test_acid_publish_one_with_mocked_browser(tmp_path: Path, fixtures_dir: Path
     monkeypatch.setattr(Session, "open", _fake_open)
     monkeypatch.setattr(Session, "is_authenticated", lambda self, page, **kw: True)
 
-    def fake_process(handle, file, opts, decide, resolve, run_id, on_progress):  # noqa: ANN001
+    def fake_process(handle, file, opts, decide, resolve, run_id, on_progress,  # noqa: ANN001
+                     resolve_class=None):
         return FileResult(
             file=str(file), title="sample_single",
             quiz_url="https://wayground.com/activity/admin/quiz/mocked",
@@ -61,7 +62,8 @@ def test_acid_should_cancel_checked_between_files(tmp_path: Path, fixtures_dir: 
 
     calls: list[str] = []
 
-    def fake_process(handle, file, opts, decide, resolve, run_id, on_progress):  # noqa: ANN001
+    def fake_process(handle, file, opts, decide, resolve, run_id, on_progress,  # noqa: ANN001
+                     resolve_class=None):
         calls.append(Path(file).name)
         return FileResult(file=str(file), title=Path(file).stem)
 

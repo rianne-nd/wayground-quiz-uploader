@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from playwright.sync_api import Locator, Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from wqu import classes as classlib
 from wqu import selectors as S
 from wqu.errors import AssignError, ClassNotFoundError, SelectorNotFoundError
 
@@ -155,24 +156,9 @@ def _wait_class_dialog_or_glitch(page: Page, *, timeout_ms: int) -> str:
     return "timeout"
 
 
-_AVAILABLE_CLASSES_JS = r"""
-() => {
-  const names = [];
-  for (const box of document.querySelectorAll('[role="checkbox"], input[type="checkbox"]')) {
-    const row = box.closest('label, li, [role="row"], [role="listitem"], div');
-    const text = ((box.getAttribute('aria-label') || (row && row.innerText) || '')).split('\n')[0].trim();
-    if (text && !/select all|set up accommodations/i.test(text)) names.push(text);
-  }
-  return [...new Set(names)];
-}
-"""
-
-
 def _available_class_names(dialog: S.Locator) -> list[str]:
-    try:
-        return [str(n) for n in dialog.evaluate(_AVAILABLE_CLASSES_JS)]
-    except Exception:
-        return []
+    """Class names offered by the open 'Assign to a class' modal."""
+    return list(classlib.scrape_classes_from_modal(dialog))
 
 
 def _select_class_row(page: Page, dialog: S.Locator, class_name: str, on_progress: ProgFn) -> None:
@@ -219,6 +205,86 @@ def _select_class_row(page: Page, dialog: S.Locator, class_name: str, on_progres
     if not state_ok:
         available = _available_class_names(dialog)
         raise ClassNotFoundError(class_name, available)
+
+
+def _cancel_class_dialog(page: Page, dialog: S.Locator) -> None:
+    """Close the class modal without committing (used before create/public)."""
+    try:
+        S.click(dialog, S.CANCEL_BUTTON, timeout_ms=3_000)
+    except Exception:
+        try:
+            page.keyboard.press("Escape")  # does not always close it; harmless
+        except Exception:
+            pass
+
+
+def _resolve_and_select_class(
+    page: Page,
+    class_name: str | None,
+    *,
+    create_if_missing: bool,
+    resolve_class: classlib.ResolveClassFn | None,
+    on_progress: ProgFn,
+) -> str | None:
+    """Open the class picker, scrape the classes, and pick/create/public.
+
+    Returns the class that was ticked and "Next"-ed, or None when the caller
+    chose the public (no class) assignment instead. Dynamic behavior
+    (2026-11-13):
+      * requested class present            -> select it (no prompts);
+      * missing / no classes + resolver    -> cli prompts (select/create/public);
+      * missing + create_if_missing        -> create the requested class;
+      * missing + nothing else             -> ClassNotFoundError (lists classes).
+    """
+    created_name: str | None = None
+    for _attempt in range(2):  # second pass after a class-creation round-trip
+        _open_class_dialog(page, on_progress)
+        dialog = S.find_dialog(page, S.CLASS_DIALOG_TITLE)
+        available = _available_class_names(dialog)
+        _log(on_progress, "Classes in your account: "
+                          + (", ".join(available) if available else "(none)"))
+
+        requested = created_name or class_name
+        if requested and requested in available:
+            choice = classlib.ClassChoice("select", requested)
+        elif resolve_class is not None and created_name is None:
+            choice = classlib.normalize_class_choice(resolve_class(tuple(available)))
+        elif create_if_missing and requested:
+            choice = classlib.ClassChoice("create", requested)
+        else:
+            raise ClassNotFoundError(class_name or "(none)", list(available))
+
+        if choice.action == "select":
+            name = (choice.name or "").strip()
+            if name not in available:
+                raise ClassNotFoundError(name or "(none)", list(available))
+            _select_class_row(page, dialog, name, on_progress)
+            _uncheck_accommodations(page, dialog, fatal=True, on_progress=on_progress)
+            S.click(dialog, S.NEXT_BUTTON, timeout_ms=8_000)
+            return name
+
+        if choice.action == "create":
+            name = (choice.name or requested or "").strip()
+            if not name:
+                raise AssignError("no class name was provided for creation")
+            homework_url = page.url
+            _cancel_class_dialog(page, dialog)
+            classlib.create_class(page, name,
+                                  require_guardian_email=choice.guardian_email,
+                                  on_progress=on_progress)
+            _log(on_progress, f"Returning to the assignment flow to use {name!r}...")
+            page.goto(homework_url, wait_until="domcontentloaded", timeout=60_000)
+            _dismiss_coachmarks(page, on_progress)
+            created_name = name
+            continue
+
+        # action == "public"
+        _cancel_class_dialog(page, dialog)
+        return None
+
+    raise AssignError(
+        f"could not select or create class {class_name!r} (creation round-trip did not converge)"
+    )
 
 
 def _uncheck_accommodations(page: Page, dialog: S.Locator, *, fatal: bool, on_progress: ProgFn) -> None:
@@ -389,21 +455,38 @@ def _dismiss_coachmarks(page: Page, on_progress: ProgFn = None, *, grace_ms: int
         pass
 
 
+def _public_assignment(page: Page, homework_id: str, on_progress: ProgFn) -> AssignResult:
+    """No class: skip class/name/deadline and click the final Assign."""
+    _log(on_progress, "Public assignment (no class): skipping class, name and deadline steps...")
+    activity_id = _click_final_assign(page, on_progress)
+    _log(on_progress, "Assignment created; gameplay dashboard reached.")
+    return AssignResult(class_name=None, public=True, homework_id=homework_id,
+                        activity_id=activity_id, activity_url=page.url,
+                        no_deadline=False)
+
+
 def assign_one(
     page: Page,
     *,
     class_name: str | None,
     assignment_title: str,
     no_deadline: bool = True,
+    create_if_missing: bool = False,
+    resolve_class: classlib.ResolveClassFn | None = None,
     on_progress: ProgFn = None,
 ) -> AssignResult:
     """Run the homework-assignment flow. Entry point: the quiz page.
 
-    ``class_name=None`` runs the PUBLIC flow (LIVE 2026-11-09 correction):
-    Wayground can assign a quiz publicly with no class and the platform's
-    default 1-day deadline. In that mode we skip "Select a class", the name
-    modal, and the deadline "Change" entirely and click the final Assign
-    straight away — which still produces a real join link.
+    ``class_name=None`` with no ``resolve_class`` runs the PUBLIC flow
+    (LIVE 2026-11-09): Wayground can assign a quiz publicly with no class and
+    the platform's default 1-day deadline.
+
+    Dynamic classes (2026-11-13): when a class is requested (or a
+    ``resolve_class`` callback is supplied) the picker is scraped first. The
+    outcome may be an existing class, a class created on the spot
+    (``create_if_missing`` or the callback's choice, with a round-trip to the
+    classes page), or a public assignment — the callback decides when the
+    requested class is missing or the account has none.
     """
     _log(on_progress, "Starting the assignment flow (Assign)...")
     # Fix (headed-run feedback): be on the quiz page, dismiss the coachmark
@@ -420,22 +503,22 @@ def assign_one(
     S.resolve(page, S.ASSIGNMENT_DETAILS_MARKER, timeout_ms=30_000)
     recover_accommodations_page(page, on_progress)
 
-    if class_name is None:
-        _log(on_progress, "Public assignment (no class): skipping class, name and deadline steps...")
-        activity_id = _click_final_assign(page, on_progress)
-        _log(on_progress, "Assignment created; gameplay dashboard reached.")
-        return AssignResult(class_name=None, public=True, homework_id=homework_id,
-                            activity_id=activity_id, activity_url=page.url,
-                            no_deadline=False)
+    if class_name is None and resolve_class is None:
+        return _public_assignment(page, homework_id, on_progress)
 
-    _open_class_dialog(page, on_progress)
-    dialog = S.find_dialog(page, S.CLASS_DIALOG_TITLE)
-    _select_class_row(page, dialog, class_name, on_progress)
-    _uncheck_accommodations(page, dialog, fatal=True, on_progress=on_progress)
-    S.click(dialog, S.NEXT_BUTTON, timeout_ms=8_000)
+    selected = _resolve_and_select_class(
+        page,
+        class_name,
+        create_if_missing=create_if_missing,
+        resolve_class=resolve_class,
+        on_progress=on_progress,
+    )
+    if selected is None:  # the resolver chose the public fallback
+        recover_accommodations_page(page, on_progress)
+        return _public_assignment(page, homework_id, on_progress)
+
     # Modals stack: the class modal stays mounted; wait for the NEXT modal.
     name_dialog = S.find_dialog(page, S.NAME_ASSIGNMENT_DIALOG_TITLE, timeout_ms=15_000)
-
     _name_assignment(page, assignment_title, on_progress, dialog=name_dialog)
     recover_accommodations_page(page, on_progress)
     try:
@@ -447,6 +530,6 @@ def assign_one(
         _set_no_deadline(page, on_progress)
     activity_id = _click_final_assign(page, on_progress)
     _log(on_progress, "Assignment created; gameplay dashboard reached.")
-    return AssignResult(class_name=class_name, public=False, homework_id=homework_id,
+    return AssignResult(class_name=selected, public=False, homework_id=homework_id,
                         activity_id=activity_id, activity_url=page.url,
                         no_deadline=no_deadline)

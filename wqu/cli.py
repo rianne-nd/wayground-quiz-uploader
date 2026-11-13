@@ -210,9 +210,12 @@ def make_decide_assign(args: argparse.Namespace, ui: LiveTreeUI | None = None):
             _say(ui, f"      Published: {view.quiz_url}")
             _prompt_line("      Press Enter to continue to the assignment step... ", ui)
         note = " (split part — default N)" if view.is_split else ""
-        answer = _prompt_line(f'      Assign to class "{DEFAULT_CLASS}"? [y/N]:{note} ', ui)
+        # No hardcoded class in the question any more: the actual class list is
+        # scraped later (resolve_class) and a missing preference is handled
+        # there (select / create / public).
+        answer = _prompt_line(f"      Assign to a class? [y/N]:{note} ", ui)
         if answer is not None and answer.strip().lower() in ("y", "yes"):
-            return DEFAULT_CLASS
+            return DEFAULT_CLASS  # preference; resolve_class fixes it if missing
         _say(ui, "      → public assignment (no class; 1-day deadline)")
         return None
 
@@ -322,11 +325,87 @@ def make_choose_archive(args: argparse.Namespace, ui: LiveTreeUI | None = None):
     return choose
 
 
+def _prompt_new_class(console):  # noqa: ANN001
+    """Ask for a new class name + guardian option; returns a ClassChoice."""
+    from wqu.classes import ClassChoice
+
+    try:
+        name = Prompt.ask("New class name", console=console, default="").strip()
+    except (EOFError, KeyboardInterrupt):
+        name = ""
+    if not name:
+        console.print("[yellow]No name given; falling back to a public assignment.[/yellow]")
+        return ClassChoice("public")
+    try:
+        guardian = Confirm.ask("Require students to enter a guardian's email address?",
+                               console=console, default=False)
+    except (EOFError, KeyboardInterrupt):
+        guardian = False
+    return ClassChoice("create", name, guardian)
+
+
+def make_resolve_class(args: argparse.Namespace, ui: LiveTreeUI | None = None):
+    """Interactive class picker used when the requested class is missing.
+
+    Called by the assign flow with the scraped class names. Returns None for
+    non-interactive runs: the pipeline then auto-creates with --create-class
+    or fails cleanly with the available-classes list.
+    """
+    if args.keep_draft:
+        return None
+    if not _is_tty():
+        return None
+
+    def resolve(available: tuple[str, ...]):
+        from wqu.classes import ClassChoice
+
+        console = ui.console if ui is not None else err_console()
+        if ui is not None:
+            ui.pause()
+        try:
+            if getattr(args, "create_class_if_missing", False) and args.assign:
+                # --create-class: hands-off even at a terminal.
+                return ClassChoice("create", args.assign)
+            if not available:
+                console.print("[yellow]No classes found in your account.[/yellow]")
+                answer = Prompt.ask(
+                    "Create a new class, or assign publicly (no class)? [C]reate / [P]ublic",
+                    default="p", console=console,
+                )
+                if (answer or "").strip().lower().startswith("c"):
+                    return _prompt_new_class(console)
+                return ClassChoice("public")
+            requested = args.assign or DEFAULT_CLASS
+            console.print(f"[yellow]Class {requested!r} not found. "
+                          f"Available classes: {', '.join(available)}.[/yellow]")
+            for index, name in enumerate(available, 1):
+                console.print(f"  [{index}] {escape(name)}")
+            answer = Prompt.ask(
+                "Select a class by number, [C]reate a new class, or [P]ublic assignment",
+                default="p", console=console,
+            )
+            text = (answer or "").strip().lower()
+            if text.isdigit() and 1 <= int(text) <= len(available):
+                return ClassChoice("select", available[int(text) - 1])
+            if text.startswith("c"):
+                return _prompt_new_class(console)
+            return ClassChoice("public")
+        except (EOFError, KeyboardInterrupt):
+            console.print("[yellow]No input available; falling back to a public assignment.[/yellow]")
+            return ClassChoice("public")
+        finally:
+            if ui is not None:
+                ui.resume()
+
+    return resolve
+
+
 def build_options(args: argparse.Namespace, logs_dir: Path) -> PipelineOptions:
     return PipelineOptions(
         subject=args.subject,
         grade=args.grade,
-        assign_class=args.assign,
+        class_name=args.assign,
+        create_class_if_missing=getattr(args, "create_class_if_missing", False),
         keep_draft=args.keep_draft,
         no_deadline=args.no_deadline,
         title=args.title,
@@ -413,6 +492,7 @@ def _publish_with_login(
                 decide_assign=make_decide_assign(args, ui),
                 resolve_duplicate=make_resolve_duplicate(args, ui),
                 choose_archive=make_choose_archive(args, ui),
+                resolve_class=make_resolve_class(args, ui),
                 on_result=None if args.quiet else ui.on_file_result,
             )
         except SessionExpiredError as exc:
@@ -564,7 +644,7 @@ def finish_publish(args: argparse.Namespace, results: list[FileResult],
     if any(r.error_kind == "session-expired" for r in results):
         err("Run 'wqu login' again.")
         return 2
-    if any(r.error_kind == "class-not-found" for r in results):
+    if any(r.error_kind in ("class-not-found", "class-create") for r in results):
         return 2
     return 1 if any_error else 0
 
@@ -935,6 +1015,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_pub.add_argument("--auto-archive-oldest", type=int, metavar="N", default=None,
                        help="when the 20-quiz library cap would be exceeded, archive the N oldest "
                             "quizzes automatically (no prompt)")
+    p_pub.add_argument("--create-class", dest="create_class_if_missing", action="store_true",
+                       help="create the requested class automatically when it does not exist "
+                            "(no prompt)")
     _add_logs_dir(p_pub)
     p_pub.set_defaults(func=cmd_publish)
 

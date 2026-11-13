@@ -18,8 +18,15 @@ REPL acid test:
 from __future__ import annotations
 
 from wqu.assign import AssignResult, assign_one
+from wqu.classes import (
+    ClassChoice,
+    CreatedClass,
+    create_class,
+    scrape_classes_from_modal,
+)
 from wqu.errors import (
     AssignError,
+    ClassCreateError,
     ClassNotFoundError,
     JoinLinkError,
     PublishError,
@@ -80,6 +87,11 @@ __all__ = [
     "CheckResult",
     "DoctorCheck",
     "discover",
+    # classes
+    "ClassChoice",
+    "CreatedClass",
+    "create_class",
+    "scrape_classes_from_modal",
     # workbook layer
     "QuizData",
     "Question",
@@ -104,5 +116,6 @@ __all__ = [
     "PublishError",
     "AssignError",
     "ClassNotFoundError",
+    "ClassCreateError",
     "JoinLinkError",
 ]

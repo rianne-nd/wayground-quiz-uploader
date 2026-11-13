@@ -80,6 +80,27 @@ first unticked item. Do not restart from scratch.
   `Live(get_renderable=self._render, ...)` (still refreshes spinner frames and timers).
   Added regression test `test_live_tree_ui_prints_preamble_while_live`; suite:
   94 passed, 3 skipped (integration), ruff clean.
+- 2026-11-14 (v0.1.6): Dynamic class detection + class creation:
+  * `wqu/classes.py` (new): `scrape_classes_from_modal` (class rows are
+    `input[name="choose-class"]`, names = first row text line), `create_class`
+    (/manage/admin/classes → "Create a class" → name → optional guardian-email
+    checkbox → "Create class" → wait until listed), `ClassChoice`
+    (select | create | public), `ResolveClassFn`, `normalize_class_choice`.
+  * assign flow: the picker is scraped before selecting; requested class
+    present → selected silently; missing/empty → `resolve_class` callback
+    (CLI prompts: pick by number / [C]reate / [P]ublic) or `create_class_if_missing`
+    (auto-create) or `ClassNotFoundError` listing the real classes; creation
+    cancels the modal, runs the classes-page round-trip, returns to the
+    homework page and re-opens the picker.
+  * `PipelineOptions.class_name` (canonical; `assign_class` is the legacy
+    alias) + `create_class_if_missing`; CLI flag `--create-class`; interactive
+    assign prompt is now "Assign to a class? [y/N]" (no hardcoded name).
+  * No more hardcoded "Naic" failure paths; empty-account UX offers
+    Create/Public. Tests: 144 passing (resolution cases, CLI prompt flows,
+    ClassChoice normalization, plumbing) + README/ARCHITECTURE docs.
+  * NOTE: live verification pending — the saved session expired (2026-11-13);
+    after `wqu login`, verify: publish with a missing --assign class → prompt,
+    --create-class, and the empty-account UX.
 - 2026-11-13 (v0.1.5): Library management commands + folded-in v0.1.4 login pre-flight:
   * `wqu list [--json]`: headless scan → rich table (# / title / age / short id) or JSON
     `{total, limit, quizzes[]}` on stdout.

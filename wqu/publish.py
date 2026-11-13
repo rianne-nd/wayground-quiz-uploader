@@ -19,11 +19,13 @@ from pathlib import Path
 from playwright.sync_api import Locator, Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from wqu import classes as classlib
 from wqu import library as lib
 from wqu import selectors as S
 from wqu.assign import assign_one
 from wqu.errors import (
     AssignError,
+    ClassCreateError,
     ClassNotFoundError,
     LibraryLimitError,
     PublishError,
@@ -74,7 +76,9 @@ class PipelineOptions:
 
     subject: str = "Information Technology (IT)"
     grade: str = "University"
-    assign_class: str | None = None
+    class_name: str | None = None          # canonical: class to assign to
+    assign_class: str | None = None        # legacy alias for class_name
+    create_class_if_missing: bool = False  # create class_name when it is absent
     keep_draft: bool = False
     no_deadline: bool = True
     title: str | None = None
@@ -565,6 +569,7 @@ def _process_one(
     resolve_duplicate: ResolveDuplicateFn | None,
     run_id: str,
     on_progress: ProgFn,
+    resolve_class: classlib.ResolveClassFn | None = None,
 ) -> FileResult:
     """Publish -> (decide) -> assign -> join link, for one workbook."""
     page = handle.page
@@ -625,9 +630,9 @@ def _process_one(
     # still yields a join link. Only --keep-draft skips assignment entirely.
     assign_class: str | None = None
     if not options.keep_draft:
-        if options.assign_class:
-            assign_class = options.assign_class
-        elif decide_assign is not None:
+        # class_name is the canonical option; assign_class is the legacy alias.
+        assign_class = options.class_name or options.assign_class
+        if assign_class is None and decide_assign is not None:
             view = FileView(file=str(file), title=data.title, quiz_url=quiz_url,
                             is_split=data.is_split, part=data.part)
             decision = decide_assign(view)
@@ -636,8 +641,12 @@ def _process_one(
             _log(on_progress, f"Assigning to class {assign_class!r}...")
         else:
             _log(on_progress, "Assigning publicly (no class, platform default 1-day deadline)...")
+        # no_deadline applies to the class flow only; the public path ignores it
+        # and assign_one reports the truth on AssignResult.
         assign_one(page, class_name=assign_class, assignment_title=data.title,
-                   no_deadline=options.no_deadline and assign_class is not None,
+                   no_deadline=options.no_deadline,
+                   create_if_missing=options.create_class_if_missing,
+                   resolve_class=resolve_class,
                    on_progress=on_progress)
         join_link = extract_join_link(page, on_progress=on_progress)
         record_created(options.state_path, title=data.title, quiz_id=quiz_id, quiz_url=quiz_url,
@@ -675,6 +684,7 @@ def publish_many(
     decide_assign: DecideAssignFn | None = None,
     resolve_duplicate: ResolveDuplicateFn | None = None,
     choose_archive: lib.ChooseArchiveFn | None = None,
+    resolve_class: classlib.ResolveClassFn | None = None,
     on_result: Callable[[FileResult], None] | None = None,
 ) -> list[FileResult]:
     """Run the pipeline over many workbooks with ONE browser session.
@@ -684,8 +694,11 @@ def publish_many(
     file whether to assign and to which class, after the quiz is published.
     ``choose_archive`` is asked (interactive CLI / GUI) when the free-tier
     library cap would be exceeded; ``options.auto_archive_oldest`` archives
-    automatically without prompting. ``on_result`` fires after each file's
-    ``FileResult`` is appended (the CLI uses it to close the live step tree).
+    automatically without prompting. ``resolve_class`` is asked (interactive
+    CLI / GUI) when the requested class is missing from the picker: it may
+    select an existing class, create a new one, or fall back to a public
+    assignment. ``on_result`` fires after each file's ``FileResult`` is
+    appended (the CLI uses it to close the live step tree).
     """
     options = options or PipelineOptions()
     session = session or Session(state_path=options.state_path, logs_dir=options.logs_dir)
@@ -729,7 +742,8 @@ def publish_many(
             _log(on_progress, f"[{index + 1}/{len(paths)}] {file.name}")
             try:
                 result = _process_one(handle, file, options, decide_assign,
-                                      resolve_duplicate, run_id, on_progress)
+                                      resolve_duplicate, run_id, on_progress,
+                                      resolve_class=resolve_class)
             except WquError as exc:
                 result = _failure_result(handle, file, options, run_id,
                                          str(exc) or exc.__class__.__name__,
@@ -756,6 +770,7 @@ def publish_many(
 
 _KIND_BY_ERROR = {
     SessionExpiredError: "session-expired",
+    ClassCreateError: "class-create",
     ClassNotFoundError: "class-not-found",
     ValidationError: "validation",
     UploadError: "upload",

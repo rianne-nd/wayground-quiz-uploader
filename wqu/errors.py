@@ -66,7 +66,13 @@ class ClassNotFoundError(AssignError):
         detail = f"Class {class_name!r} not found."
         if self.available:
             detail += " Available classes: " + ", ".join(self.available)
+        else:
+            detail += " (no classes in this account)"
         super().__init__(detail)
+
+
+class ClassCreateError(AssignError):
+    """Creating a class on the Wayground classes page failed."""
 
 
 class JoinLinkError(WquError):

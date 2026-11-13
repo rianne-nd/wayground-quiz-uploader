@@ -37,6 +37,16 @@ Delete them in the Wayground UI when convenient:
 > as the renderable). Fixed with `Live(get_renderable=...)`; regression test
 > added. 94 unit tests pass.
 >
+> **Update 2026-11-14 (v0.1.6):** dynamic classes — the assign flow now
+> scrapes your actual classes from the picker; a missing/absent class offers
+> *pick existing / create new / public* (or `--create-class` for hands-off).
+> Class creation runs on `/manage/admin/classes` with the optional guardian
+> email checkbox. **Your session expired on 2026-11-13** — run `wqu login`,
+> then live-verify: `wqu publish tests\fixtures\sample_single.xlsx --assign "NoSuchClass"`
+> (expect the select/create/public prompt), `--assign NewClass --create-class`
+> (expect auto-creation + assignment), and delete any test class afterwards on
+> the classes page.
+>
 > **Update 2026-11-10 (v0.1.4):** login pre-flight. `wqu publish` now probes
 > the stored session before the library check and before creating anything; an
 > expired/missing session used to slip past (the library pre-check swallowed

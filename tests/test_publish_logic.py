@@ -34,9 +34,12 @@ def mocked_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(P, "upload_xlsx", lambda *a, **k: None)
     monkeypatch.setattr(P, "publish_quiz", lambda *a, **k: QUIZ_URL)
 
-    def fake_assign(page, *, class_name, assignment_title, no_deadline=True, on_progress=None):  # noqa: ANN001
+    def fake_assign(page, *, class_name, assignment_title, no_deadline=True,  # noqa: ANN001
+                    create_if_missing=False, resolve_class=None, on_progress=None):
         calls["class_name"] = class_name
         calls["no_deadline"] = no_deadline
+        calls["create_if_missing"] = create_if_missing
+        calls["resolve_class"] = resolve_class
         return SimpleNamespace(class_name=class_name, public=class_name is None)
 
     monkeypatch.setattr(P, "assign_one", fake_assign)
@@ -48,10 +51,11 @@ def mocked_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     return calls
 
 
-def _run(mocked: dict, decide=None, options: PipelineOptions | None = None) -> FileResult:
+def _run(mocked: dict, decide=None, options: PipelineOptions | None = None,
+         resolve_class=None) -> FileResult:
     return P._process_one(
         mocked["handle"], mocked["file"], options or mocked["options"],
-        decide, None, "runid", None,
+        decide, None, "runid", None, resolve_class=resolve_class,
     )
 
 
@@ -98,9 +102,43 @@ def test_keep_draft_skips_assignment_entirely(mocked_pipeline: dict) -> None:
     assert result.line().endswith("(NO JOIN LINK — published but not assigned)")
 
 
-def test_public_mode_never_sets_no_deadline(mocked_pipeline: dict) -> None:
+def test_no_deadline_option_is_passed_through(mocked_pipeline: dict) -> None:
+    # _process_one always forwards the option; assign_one applies it only to
+    # the class flow (the public path reports no_deadline=False itself).
     _run(mocked_pipeline, decide=lambda view: None)
-    assert mocked_pipeline["no_deadline"] is False  # platform default 1-day deadline
+    assert mocked_pipeline["no_deadline"] is True  # default
+
+    options = mocked_pipeline["options"]
+    options = PipelineOptions(state_path=options.state_path, logs_dir=options.logs_dir,
+                              class_name="A", no_deadline=False)
+    _run(mocked_pipeline, decide=None, options=options)
+    assert mocked_pipeline["no_deadline"] is False
+
+
+def test_class_name_option_beats_legacy_assign_class(mocked_pipeline: dict) -> None:
+    options = mocked_pipeline["options"]
+    options = PipelineOptions(state_path=options.state_path, logs_dir=options.logs_dir,
+                              class_name="New", assign_class="Legacy")
+    _run(mocked_pipeline, decide=None, options=options)
+    assert mocked_pipeline["class_name"] == "New"
+
+
+def test_legacy_assign_class_alias_still_works(mocked_pipeline: dict) -> None:
+    options = mocked_pipeline["options"]
+    options = PipelineOptions(state_path=options.state_path, logs_dir=options.logs_dir,
+                              assign_class="Legacy")
+    _run(mocked_pipeline, decide=None, options=options)
+    assert mocked_pipeline["class_name"] == "Legacy"
+
+
+def test_create_class_and_resolver_flow_into_assign_one(mocked_pipeline: dict) -> None:
+    options = mocked_pipeline["options"]
+    options = PipelineOptions(state_path=options.state_path, logs_dir=options.logs_dir,
+                              class_name="Missing", create_class_if_missing=True)
+    sentinel = lambda available: None  # noqa: E731 - identity check only
+    _run(mocked_pipeline, decide=None, options=options, resolve_class=sentinel)
+    assert mocked_pipeline["create_if_missing"] is True
+    assert mocked_pipeline["resolve_class"] is sentinel
 
 
 # --- CLI finish: panel + clipboard ordering ---------------------------------

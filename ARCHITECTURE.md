@@ -15,6 +15,9 @@ wqu/core.py           the public import surface (re-exports only)
    ├── wqu/publish.py   publish_one() / publish_many(): per-file pipeline
    ├── wqu/assign.py    assign_one(): quiz page → homework → class → name →
    │                    No deadline → final Assign → gameplay page
+   ├── wqu/classes.py   dynamic class targets: scrape the "Assign to a class"
+   │                    modal, create classes on /manage/admin/classes,
+   │                    ClassChoice (select | create | public)
    ├── wqu/session.py   Session: login/check/doctor/discover, browser lifetime
    ├── wqu/upload.py    load_xlsx()/preview_errors(): Part-1.5 validation
    ├── wqu/output.py    FileResult, format_links/format_json/summary, clipboard
@@ -209,12 +212,26 @@ failure of the run) a Playwright trace `wqu-logs/<ts>.trace.zip` for
 4. **Handle Accommodations Glitch:** if the full-page "Set up learning
    supports" appears (after Assign *or* after "Select a class"), click the
    back arrow (`chevron-left` → "Back" → Escape → go_back) and resume.
-5. **Standard Flow (With Class):**
-   * Click "Select a class" (`[data-testid=select-class-button]`) → check
-     "Naic" (click the row text) → force-uncheck "Set up Accommodations"
-     (it flips ON when the class is selected;
-     `[data-testid=assignment-setup-accommodations-toggle]`, JS-click fallback)
-     → Next.
+5. **Standard Flow (With Class) — dynamic targets (2026-11-13/14):**
+   * Click "Select a class" (`[data-testid=select-class-button]`) and scrape
+     the class rows (`input[name="choose-class"]`; first text line of the row
+     is the class name — see `classes.scrape_classes_from_modal`).
+   * Requested class present → select it (no prompts).
+   * Missing or the account has none → the `resolve_class` callback decides
+     (CLI prompts with the scraped list: pick by number / **[C]reate** /
+     **[P]ublic**; a GUI can implement its own dialog). With no callback,
+     `create_class_if_missing` (CLI `--create-class`) creates the requested
+     class automatically, otherwise `ClassNotFoundError` lists the classes.
+   * **Class creation round-trip** (`classes.create_class`): cancel the
+     modal → `https://wayground.com/manage/admin/classes` → "Create a class"
+     → "Create a new class" modal → fill "Enter class name" → optional
+     "Require students to enter a guardian's email address" → "Create class"
+     → wait until the class is listed → return to the homework page and
+     re-open the picker, which now selects the new class.
+   * Then: tick the class (click the row text) → force-uncheck
+     "Set up Accommodations" (it flips ON when the class is selected;
+     `[data-testid=assignment-setup-accommodations-toggle]`, JS-click
+     fallback) → Next.
    * Fill the assignment Name → keep "Set up Accommodations" unchecked → Next.
    * Click "Change" (`[data-testid=toggle-calendar-button]`) → toggle
      "No deadline" ON (`input[role=switch][data-testid=date-time-selector-input]`,
